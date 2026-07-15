@@ -1,0 +1,49 @@
+name: Godot CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: godot-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  blocking-tests:
+    name: Godot 4.7 blocking tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GODOT_ARCHIVE: Godot_v4.7-stable_linux.x86_64.zip
+      GODOT_URL: https://github.com/godotengine/godot/releases/download/4.7-stable/Godot_v4.7-stable_linux.x86_64.zip
+      GODOT_SHA512: b639ca9c1ddea39bb3df89bd5283a51ca6047467abe6b25e9436566f2b2082ede633025073989ecf39c7d5d3c2493d80ea13e3af6dd5e261bbf89e462d6d2214
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install verified Godot 4.7 stable
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_dir="$RUNNER_TEMP/godot-4.7"
+          mkdir -p "$install_dir"
+          cd "$install_dir"
+          curl --fail --location --retry 3 --output "$GODOT_ARCHIVE" "$GODOT_URL"
+          printf '%s  %s\n' "$GODOT_SHA512" "$GODOT_ARCHIVE" | sha512sum --check --strict
+          unzip -q "$GODOT_ARCHIVE"
+          mv Godot_v4.7-stable_linux.x86_64 godot
+          chmod +x godot
+          printf '%s\n' "$install_dir" >> "$GITHUB_PATH"
+          ./godot --version
+
+      - name: Run constitutional blocking suite
+        run: python3 tools/ci/run_godot_tests.py --godot godot --project main

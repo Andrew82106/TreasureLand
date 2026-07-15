@@ -13,3 +13,7 @@ main/tests/artifacts/
 Thumbs.db
 *.tmp
 *.log
+
+# Python tooling cache
+__pycache__/
+*.py[cod]

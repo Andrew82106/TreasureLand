@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""Run TreasureLand's blocking Godot checks locally or in CI."""
+
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+from typing import Sequence
+
+
+EXPECTED_GODOT_VERSION = "4.7.stable"
+
+BLOCKING_TESTS: tuple[tuple[str, str], ...] = (
+    ("res://tests/smoke_test.gd", "SMOKE TEST PASS"),
+    (
+        "res://tests/poker_state_machine_stress_test.gd",
+        "POKER STATE MACHINE STRESS PASS",
+    ),
+    ("res://tests/poker_opening_ai_test.gd", "POKER OPENING AI PASS"),
+    ("res://tests/poker_animation_test.gd", "POKER ANIMATION TEST PASS"),
+    ("res://tests/poker_npc_avatar_test.gd", "POKER NPC AVATAR TEST PASS"),
+    (
+        "res://tests/pixel_character_animator_test.gd",
+        "PIXEL CHARACTER ANIMATOR TEST PASS",
+    ),
+)
+
+
+def parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Import the Godot project and run all blocking test scripts."
+    )
+    parser.add_argument(
+        "--godot",
+        default=os.environ.get("GODOT_BIN", "godot"),
+        help="Godot executable path or command name (default: GODOT_BIN or godot).",
+    )
+    parser.add_argument(
+        "--project",
+        default="main",
+        help="Path containing project.godot (default: main).",
+    )
+    return parser.parse_args(argv)
+
+
+def resolve_executable(value: str) -> str:
+    candidate = Path(value).expanduser()
+    if candidate.is_file():
+        return str(candidate.resolve())
+
+    resolved = shutil.which(value)
+    if resolved:
+        return resolved
+
+    raise FileNotFoundError(f"Godot executable was not found: {value}")
+
+
+def stream_command(command: Sequence[str], label: str) -> tuple[int, str]:
+    print(f"\n:: {label}", flush=True)
+    print("$ " + " ".join(command), flush=True)
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    output_lines: list[str] = []
+    assert process.stdout is not None
+    for line in process.stdout:
+        print(line, end="", flush=True)
+        output_lines.append(line)
+    return process.wait(), "".join(output_lines)
+
+
+def run_suite(godot: str, project: Path) -> int:
+    version_result = subprocess.run(
+        [godot, "--version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    version = (version_result.stdout or version_result.stderr).strip()
+    print(f"Godot version: {version}", flush=True)
+    if version_result.returncode != 0 or not version.startswith(EXPECTED_GODOT_VERSION):
+        print(
+            f"ERROR: expected Godot {EXPECTED_GODOT_VERSION}, got {version or 'unknown'}.",
+            file=sys.stderr,
+        )
+        return 1
+
+    import_code, _ = stream_command(
+        [godot, "--headless", "--editor", "--path", str(project), "--quit"],
+        "L0 project import and script parse",
+    )
+    if import_code != 0:
+        print(f"ERROR: project import failed with exit code {import_code}.", file=sys.stderr)
+        return 1
+
+    failures: list[str] = []
+    for test_path, pass_marker in BLOCKING_TESTS:
+        code, output = stream_command(
+            [godot, "--headless", "--path", str(project), "--script", test_path],
+            test_path,
+        )
+        if code != 0:
+            failures.append(f"{test_path}: exited with code {code}")
+        elif pass_marker not in output:
+            failures.append(f"{test_path}: missing pass marker {pass_marker!r}")
+
+    print("\n:: CI summary", flush=True)
+    if failures:
+        for failure in failures:
+            print(f"FAIL: {failure}", file=sys.stderr)
+        print(f"{len(failures)} blocking check(s) failed.", file=sys.stderr)
+        return 1
+
+    print(f"PASS: project import and all {len(BLOCKING_TESTS)} blocking tests.")
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv if argv is not None else sys.argv[1:])
+    project = Path(args.project).expanduser().resolve()
+    if not (project / "project.godot").is_file():
+        print(f"ERROR: project.godot was not found under {project}.", file=sys.stderr)
+        return 2
+
+    try:
+        godot = resolve_executable(args.godot)
+    except FileNotFoundError as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+    return run_suite(godot, project)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

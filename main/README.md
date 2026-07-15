@@ -32,11 +32,10 @@
 
 ## 自动检查
 
-Godot 在命令行可用时，可在本目录运行：
+仓库根目录的 `tools/ci/run_godot_tests.py` 是本地与 GitHub Actions 共用的阻断测试入口。Godot 在命令行可用时，从仓库根目录运行：
 
 ```powershell
-godot --headless --editor --path . --quit
-godot --headless --path . --script res://tests/smoke_test.gd
+python tools/ci/run_godot_tests.py --godot godot --project main
 ```
 
-第一条检查项目与脚本能否加载，第二条验证合成、投入顺序、物品保护、NPC 委托、竞速、水火九级命象、牌会结算、经济与时间结算。
+该入口先检查 Godot 4.7 stable、项目导入与脚本解析，再依次运行 CI 宪法登记的六个阻断测试。视觉截图脚本目前用于人工评审，不属于主门禁。
