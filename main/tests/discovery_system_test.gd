@@ -189,9 +189,21 @@ func _test_full_screen_synthesis_ui() -> void:
 	assert(table.left_library.get_child_count() == 3 and table.right_library.get_child_count() == 3, "开局左右图鉴都必须只显示水、火、土")
 	assert(table.center_stage != null and not _has_ancestor_class(table.center_stage, "ScrollContainer"), "中央实验舞台必须固定且不能随图鉴滚动")
 	assert(_tree_contains_text(table.page_root, "1阶 3/3") and _tree_contains_text(table.page_root, "4阶 0/55"), "顶部必须显式展示四阶发现进度")
-	table._select_item("left", "water")
-	table._select_item("right", "fire")
+	var old_page: Control = table.page_root
+	var water_button := _find_button(table.left_library, "水")
+	var fire_button := _find_button(table.right_library, "火")
+	assert(water_button != null and fire_button != null, "左右图鉴必须生成可操作的万物按钮")
+	water_button.pressed.emit()
+	fire_button.pressed.emit()
+	assert(table.page_root == old_page and is_instance_valid(old_page), "选择信号期间不得同步释放当前造化盆界面")
+	await process_frame
+	assert(table.page_root != old_page and table.left_id == "water" and table.right_id == "fire", "选择完成后必须在下一帧合并执行一次界面重建")
 	assert(_tree_contains_text(table.center_stage, "首次尝试这段关系需要2金贝"), "中央舞台必须在提交前显示准确费用")
+	var result_page: Control = table.page_root
+	table.action_button.pressed.emit()
+	await create_timer(0.35).timeout
+	await process_frame
+	assert(table.page_root != result_page and table.game.is_discovered("steam"), "实验动画结束后必须延迟重建并安全显示新发现")
 	table._show_graph()
 	assert(table.graph_overlay.visible and _tree_contains_text(table.graph_overlay, "四阶原型共72个万物、69条固定关系"), "页面内必须提供可查询的四阶组合谱")
 	table._hide_graph()
@@ -219,6 +231,16 @@ func _tree_contains_text(node: Node, needle: String) -> bool:
 		if _tree_contains_text(child, needle):
 			return true
 	return false
+
+
+func _find_button(node: Node, exact_text: String) -> Button:
+	if node is Button and str(node.text) == exact_text:
+		return node
+	for child in node.get_children():
+		var found := _find_button(child, exact_text)
+		if found != null:
+			return found
+	return null
 
 
 func _has_ancestor_class(node: Node, class_name_value: String) -> bool:

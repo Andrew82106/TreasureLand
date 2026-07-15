@@ -14,6 +14,10 @@ var left_tier_filter: int = 0
 var right_tier_filter: int = 0
 var last_result: Dictionary = {}
 var busy: bool = false
+var rebuild_queued: bool = false
+var pulse_after_rebuild: bool = false
+var strong_pulse_after_rebuild: bool = false
+var center_pulse_tween: Tween
 
 var page_root: Control
 var left_library: GridContainer
@@ -38,6 +42,9 @@ func open() -> void:
 	visible = true
 	busy = false
 	last_result = {}
+	rebuild_queued = false
+	pulse_after_rebuild = false
+	strong_pulse_after_rebuild = false
 	_rebuild()
 
 
@@ -52,6 +59,9 @@ func request_close() -> void:
 
 
 func _rebuild() -> void:
+	if center_pulse_tween != null and center_pulse_tween.is_valid():
+		center_pulse_tween.kill()
+	center_pulse_tween = null
 	for child in get_children():
 		child.free()
 	page_root = ColorRect.new()
@@ -96,6 +106,30 @@ func _rebuild() -> void:
 	graph_overlay = _build_graph_overlay()
 	page_root.add_child(graph_overlay)
 	graph_overlay.visible = false
+
+
+func _queue_rebuild(pulse_center: bool = false, strong_pulse: bool = false) -> void:
+	pulse_after_rebuild = pulse_after_rebuild or pulse_center
+	strong_pulse_after_rebuild = strong_pulse_after_rebuild or strong_pulse
+	if rebuild_queued:
+		return
+	rebuild_queued = true
+	call_deferred("_flush_queued_rebuild")
+
+
+func _flush_queued_rebuild() -> void:
+	if not rebuild_queued:
+		return
+	rebuild_queued = false
+	var should_pulse := pulse_after_rebuild
+	var strong_pulse := strong_pulse_after_rebuild
+	pulse_after_rebuild = false
+	strong_pulse_after_rebuild = false
+	if not is_inside_tree() or not visible:
+		return
+	_rebuild()
+	if should_pulse:
+		_pulse_center(strong_pulse)
 
 
 func _build_header() -> PanelContainer:
@@ -447,7 +481,7 @@ func _set_tier_filter(index: int, side: String) -> void:
 		left_tier_filter = index
 	else:
 		right_tier_filter = index
-	_rebuild()
+	_queue_rebuild()
 
 
 func _select_item(side: String, item_id: String) -> void:
@@ -458,8 +492,7 @@ func _select_item(side: String, item_id: String) -> void:
 	else:
 		right_id = item_id
 	last_result = {}
-	_rebuild()
-	_pulse_center()
+	_queue_rebuild(true)
 
 
 func _clear_selection() -> void:
@@ -468,7 +501,7 @@ func _clear_selection() -> void:
 	left_id = ""
 	right_id = ""
 	last_result = {}
-	_rebuild()
+	_queue_rebuild()
 
 
 func _submit() -> void:
@@ -485,8 +518,7 @@ func _submit() -> void:
 	await tween.finished
 	last_result = game.synthesize_pair(left_id, right_id)
 	busy = false
-	_rebuild()
-	_pulse_center(true)
+	_queue_rebuild(true, true)
 
 
 func _pulse_center(strong: bool = false) -> void:
@@ -495,9 +527,11 @@ func _pulse_center(strong: bool = false) -> void:
 	center_stage.pivot_offset = center_stage.size * 0.5
 	center_stage.scale = Vector2(0.985, 0.985) if strong else Vector2(0.994, 0.994)
 	center_stage.modulate = Color("fff2b8") if strong else Color("d9f6ed")
-	var tween := create_tween().set_parallel(true)
-	tween.tween_property(center_stage, "scale", Vector2.ONE, 0.28 if strong else 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tween.tween_property(center_stage, "modulate", Color.WHITE, 0.28 if strong else 0.14)
+	if center_pulse_tween != null and center_pulse_tween.is_valid():
+		center_pulse_tween.kill()
+	center_pulse_tween = create_tween().set_parallel(true)
+	center_pulse_tween.tween_property(center_stage, "scale", Vector2.ONE, 0.28 if strong else 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	center_pulse_tween.tween_property(center_stage, "modulate", Color.WHITE, 0.28 if strong else 0.14)
 
 
 func _show_graph() -> void:
