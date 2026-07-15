@@ -15,6 +15,7 @@ from typing import Sequence
 EXPECTED_GODOT_VERSION = "4.7.stable"
 
 BLOCKING_TESTS: tuple[tuple[str, str], ...] = (
+    ("res://tests/discovery_system_test.gd", "DISCOVERY SYSTEM TEST PASS"),
     ("res://tests/smoke_test.gd", "SMOKE TEST PASS"),
     (
         "res://tests/poker_state_machine_stress_test.gd",
@@ -96,12 +97,16 @@ def run_suite(godot: str, project: Path) -> int:
         )
         return 1
 
-    import_code, _ = stream_command(
+    import_code, import_output = stream_command(
         [godot, "--headless", "--editor", "--path", str(project), "--quit"],
         "L0 project import and script parse",
     )
-    if import_code != 0:
-        print(f"ERROR: project import failed with exit code {import_code}.", file=sys.stderr)
+    import_errors = ("SCRIPT ERROR", "Parse Error", "Failed to load script")
+    if import_code != 0 or any(marker in import_output for marker in import_errors):
+        print(
+            f"ERROR: project import or script parse failed with exit code {import_code}.",
+            file=sys.stderr,
+        )
         return 1
 
     failures: list[str] = []

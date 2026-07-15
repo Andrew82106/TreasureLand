@@ -6,11 +6,7 @@ const WealthChartScript = preload("res://scripts/wealth_chart.gd")
 
 
 func _init() -> void:
-	_test_direct_synthesis()
-	_test_ordered_recipe_resolution()
-	_test_refinement_feedback_and_tiers()
-	_test_shop_material_boundary()
-	_test_protection_and_request()
+	_test_daily_limits_and_tiers()
 	_test_oracle_patterns()
 	_test_poker_betting_state_machine()
 	_test_wealth_history_and_chart()
@@ -21,18 +17,11 @@ func _init() -> void:
 	_test_oracle_record_file()
 	_test_oracle_action_buttons()
 	_test_oracle_record_window()
-	print("SMOKE TEST PASS: synthesis, inventory, request, race, oracle table, economy and time")
+	print("SMOKE TEST PASS: world loop, race, oracle table, economy and time")
 	quit(0)
 
 
-func _test_refinement_feedback_and_tiers() -> void:
-	var synthesis_state = GameStateScript.new()
-	synthesis_state.add_item("wood", 1)
-	var failed: Dictionary = synthesis_state.synthesize(["water", "wood"])
-	assert(not bool(failed.get("success", true)), "无效材料组合必须明确判定为合成失败")
-	assert(not str(failed.get("failure_reason", "")).is_empty() and not str(failed.get("suggestion", "")).is_empty(), "合成失败必须说明原因并给出不泄露答案的下一步建议")
-	assert(failed.get("consumed_names", []).size() == 2, "失败反馈必须列出实际消耗的材料")
-
+func _test_daily_limits_and_tiers() -> void:
 	var fishing_state = GameStateScript.new()
 	var tide_before: int = int(fishing_state.tide)
 	for _attempt in range(fishing_state.DAILY_FISHING_LIMIT):
@@ -55,30 +44,15 @@ func _test_refinement_feedback_and_tiers() -> void:
 	poker_state.poker_action("fold")
 
 
-func _test_shop_material_boundary() -> void:
-	var state = GameStateScript.new()
-	state.add_item("mud", 1)
-	state.refresh_day()
-	assert(not state.shop_catalog().has("mud") and not state.shop_catalog().has("shell_shirt"), "商店采购目录只能出售原材料，造物与衣服不能因发现而上架")
-	assert(not bool(state.buy_item("mud", 1).get("ok", true)), "玩家不能从商店购买尚未亲手合成的造物")
-	var cash_before := int(state.cash)
-	var sold: Dictionary = state.sell_item("mud", 1)
-	assert(bool(sold.get("ok", false)) and state.cash > cash_before, "背包里真实存在的合成品必须可以卖给商店")
-	assert(not bool(state.sell_item("mud", 1).get("ok", true)), "背包里没有实物时不能继续出售造物")
-
-
 func _test_wealth_history_and_chart() -> void:
 	var state = GameStateScript.new()
 	assert(state.wealth_history.size() == 1, "财富轨迹必须从上岛时的初始净资产开始")
 	var start_worth := state.net_worth()
-	assert(start_worth == state.account_wealth() + state.asset_liquidation_value(), "净资产必须包含金贝、活动中本金和背包保守回收价")
-	var bought: Dictionary = state.buy_item("water", 1)
-	assert(bool(bought.get("ok", false)) and state.wealth_history.size() == 2, "购买结算后必须留下财富节点")
+	assert(start_worth == state.account_wealth() and state.asset_liquidation_value() == 0, "永久万物不得折算为现金资产")
+	var experiment: Dictionary = state.synthesize_pair("water", "earth")
+	assert(bool(experiment.get("ok", false)) and state.wealth_history.size() == 2, "万物实验付费后必须留下财富节点")
 	var after_buy := state.net_worth()
-	assert(after_buy < start_worth, "按零售购买后净资产应体现买卖价差")
-	var sold: Dictionary = state.sell_item("water", 1)
-	assert(bool(sold.get("ok", false)) and state.wealth_history.size() == 3, "出售即使只是资产转换也必须留下可解释节点")
-	assert(state.net_worth() == after_buy, "按保守回收价出售物品不应凭空改变净资产")
+	assert(after_buy == start_worth - 2, "基础实验必须准确降低2金贝净资产")
 	state.fish_once()
 	assert(state.net_worth() > after_buy and str(state.wealth_history[-1].get("reason", "")) == "浅滩采集", "采集收益必须推动财富曲线并记录来源")
 	var milestone: Dictionary = state.next_wealth_milestone()
@@ -87,42 +61,6 @@ func _test_wealth_history_and_chart() -> void:
 	chart.setup(state.wealth_history_for_chart())
 	assert(chart.history.size() == state.wealth_history_for_chart().size() and chart.custom_minimum_size.y >= 280.0, "财富曲线控件必须接收完整历史并保留可读高度")
 	chart.free()
-
-
-func _test_direct_synthesis() -> void:
-	var state = GameStateScript.new()
-	var result: Dictionary = state.synthesize(["water", "earth"])
-	assert(bool(result.get("success", false)), "正确材料应该直接合成")
-	assert(int(state.inventory.get("mud", 0)) == 1, "水+土应该生成泥")
-	assert(int(state.inventory.get("water", 0)) == 1, "合成应该消耗水")
-	assert(int(state.inventory.get("earth", 0)) == 1, "合成应该消耗土")
-
-
-func _test_ordered_recipe_resolution() -> void:
-	var state = GameStateScript.new()
-	state.add_item("fire", 1)
-	state.add_item("wood", 1)
-	var result: Dictionary = state.synthesize(["fire", "wood", "water"])
-	assert(bool(result.get("success", false)), "子集配方应该成功")
-	assert(str(result.get("output", "")) == "charcoal", "最先被投入顺序完成的配方应该获胜")
-	assert(int(state.inventory.get("water", 0)) == 1, "额外投入的水也应该消耗")
-
-
-func _test_protection_and_request() -> void:
-	var state = GameStateScript.new()
-	state.toggle_lock("water")
-	var protected_result: Dictionary = state.synthesize(["water", "earth"])
-	assert(not bool(protected_result.get("ok", true)), "锁定材料不能合成")
-	state.toggle_lock("water")
-	state.add_item("fish", 1)
-	state.add_item("salt", 1)
-	var crafted: Dictionary = state.synthesize(["fish", "salt"])
-	assert(str(crafted.get("output", "")) == "salted_fish", "鱼+盐应该生成咸鱼")
-	state.activate_aqiu_request()
-	assert(state.is_protected("salted_fish"), "委托材料应该被保留")
-	var delivery: Dictionary = state.turn_in_aqiu_request()
-	assert(bool(delivery.get("ok", false)), "咸鱼应该能够提交给阿葵")
-	assert(state.cash == 200, "阿葵委托应奖励80金贝")
 
 
 func _test_race_and_poker_settlement() -> void:

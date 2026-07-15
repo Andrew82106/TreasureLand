@@ -38,4 +38,4 @@
 python tools/ci/run_godot_tests.py --godot godot --project main
 ```
 
-该入口先检查 Godot 4.7 stable、项目导入与脚本解析，再依次运行 CI 宪法登记的六个阻断测试。视觉截图脚本目前用于人工评审，不属于主门禁。
+该入口先检查 Godot 4.7 stable、项目导入与脚本解析，再依次运行 CI 宪法登记的七个阻断测试。视觉截图脚本目前用于人工评审，不属于主门禁。

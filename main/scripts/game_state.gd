@@ -5,29 +5,28 @@ signal changed
 signal notice(text: String)
 
 const ITEMS := {
-	"water": {"name": "水", "value": 8, "tradable": true, "category": "材料"},
-	"earth": {"name": "土", "value": 8, "tradable": true, "category": "材料"},
-	"fire": {"name": "火", "value": 12, "tradable": true, "category": "材料"},
-	"wood": {"name": "木", "value": 14, "tradable": true, "category": "材料"},
-	"wind": {"name": "风", "value": 16, "tradable": true, "category": "材料"},
-	"stone": {"name": "石", "value": 10, "tradable": true, "category": "材料"},
-	"fish": {"name": "鱼", "value": 18, "tradable": true, "category": "材料"},
-	"fruit": {"name": "果实", "value": 16, "tradable": true, "category": "材料"},
-	"salt": {"name": "盐", "value": 15, "tradable": true, "category": "材料"},
-	"metal": {"name": "金", "value": 32, "tradable": true, "category": "材料"},
-	"cloth": {"name": "布", "value": 25, "tradable": true, "category": "材料"},
-	"paper": {"name": "纸", "value": 18, "tradable": true, "category": "材料"},
-	"flower": {"name": "花", "value": 20, "tradable": true, "category": "材料"},
-	"mud": {"name": "泥", "value": 24, "tradable": true, "category": "造物"},
-	"charcoal": {"name": "炭", "value": 34, "tradable": true, "category": "造物"},
-	"fog": {"name": "雾", "value": 38, "tradable": true, "category": "造物"},
-	"pottery": {"name": "陶器", "value": 62, "tradable": true, "category": "造物"},
-	"tool": {"name": "工具", "value": 78, "tradable": true, "category": "造物"},
-	"sail": {"name": "风帆", "value": 92, "tradable": true, "category": "造物"},
-	"salted_fish": {"name": "咸鱼", "value": 55, "tradable": true, "category": "造物"},
-	"calm_incense": {"name": "静心香", "value": 86, "tradable": true, "category": "辅助造物"},
-	"wind_bell": {"name": "观风铃", "value": 96, "tradable": true, "category": "辅助造物"},
-	"shell_shirt": {"name": "贝壳衬衫", "value": 80, "tradable": true, "category": "生活物品"}
+	"water": {"name": "水", "tier": 0, "category": "自然", "description": "岛上最常见的流动，也是一切变化的起点。"},
+	"earth": {"name": "土", "tier": 0, "category": "自然", "description": "能够承接形状、种子与重量的基础万物。"},
+	"fire": {"name": "火", "tier": 0, "category": "自然", "description": "让万物改变形态并留下新性质的热。"},
+	"wood": {"name": "木", "tier": 0, "category": "自然", "description": "有纹理、韧性和生长痕迹的岛木。"},
+	"wind": {"name": "风", "tier": 0, "category": "自然", "description": "看不见，却会在海面、风帆和铃声中留下方向。"},
+	"stone": {"name": "石", "tier": 0, "category": "自然", "description": "稳定、沉默，记录着岛屿长久的形状。"},
+	"fish": {"name": "鱼", "tier": 0, "category": "生灵", "description": "随潮水靠近浅滩的海中生灵。"},
+	"fruit": {"name": "果实", "tier": 0, "category": "生灵", "description": "植物把阳光和季节保存下来的甜味。"},
+	"salt": {"name": "盐", "tier": 0, "category": "生活", "description": "海水退去后留下的晶体，能够改变保存方式。"},
+	"metal": {"name": "金", "tier": 0, "category": "工艺", "description": "可被锻打、传声并形成精密边缘的金属。"},
+	"cloth": {"name": "布", "tier": 0, "category": "生活", "description": "由纤维交织而成，柔软却能承接风力。"},
+	"paper": {"name": "纸", "tier": 0, "category": "生活", "description": "可以保存符号、地图与人物记忆的薄片。"},
+	"flower": {"name": "花", "tier": 0, "category": "生灵", "description": "短暂盛开，却能留下气味和颜色。"},
+	"mud": {"name": "泥", "tier": 1, "category": "工艺", "description": "水与土安静结合后的第一种稳定造物。"},
+	"charcoal": {"name": "炭", "tier": 1, "category": "工艺", "description": "木在火中留下的凝练热量。"},
+	"fog": {"name": "雾", "tier": 1, "category": "自然", "description": "被风托住、暂时不肯落下的水。"},
+	"pottery": {"name": "陶器", "tier": 2, "category": "生活", "description": "泥经历火之后获得了可以长久保存的形状。"},
+	"tool": {"name": "工具", "tier": 2, "category": "工艺", "description": "木提供握持，金提供改变与测量世界的锋面。"},
+	"sail": {"name": "风帆", "tier": 2, "category": "工艺", "description": "布接住风，第一次把方向变成力量。"},
+	"salted_fish": {"name": "咸鱼", "tier": 2, "category": "生活", "description": "海获与盐共同形成的保存方法。"},
+	"calm_incense": {"name": "静心香", "tier": 3, "category": "灵感", "description": "炭托起花香，让纷乱慢慢沉静。"},
+	"wind_bell": {"name": "观风铃", "tier": 3, "category": "灵感", "description": "金属替无形的风留下了可以比较的声音。"}
 }
 
 const RECIPES := [
@@ -42,10 +41,21 @@ const RECIPES := [
 	{"inputs": ["metal", "wind"], "output": "wind_bell"}
 ]
 
-const BASE_SHOP_ITEMS := [
-	"water", "earth", "fire", "wood", "wind", "stone", "fish",
-	"fruit", "salt", "metal", "cloth", "paper", "flower"
+const INITIAL_DISCOVERIES := ["water", "earth", "fire", "wind", "wood", "stone"]
+const SYNTHESIS_COST_BY_TIER := [2, 5, 12, 30]
+const SHOP_OFFERS := [
+	{"id": "metal_knowledge", "name": "金工拓片", "type": "knowledge", "price": 35, "art": "metal", "unlock": "metal", "description": "永久发现“金”，开启工具与观风铃的研究关系。"},
+	{"id": "cloth_knowledge", "name": "织造样本", "type": "knowledge", "price": 30, "art": "cloth", "unlock": "cloth", "description": "永久发现“布”，开启风帆的研究关系。"},
+	{"id": "paper_knowledge", "name": "抄纸手记", "type": "knowledge", "price": 25, "art": "paper", "unlock": "paper", "description": "永久发现“纸”，为地图与记录类造物打开入口。"},
+	{"id": "recipe_hint", "name": "配方方向线索", "type": "hint", "price": 12, "art": "paper", "description": "指出一个已知万物可能回应的类别，不公开结果。"},
+	{"id": "experiment_discount", "name": "三次实验折扣", "type": "discount", "price": 24, "art": "charcoal", "uses": 3, "cap": 6, "description": "接下来三次新组合实验费减半，向上取整。"}
 ]
+const RACE_AIDS := {
+	"tool": {"name": "分段量具", "fee": 4, "description": "测出所选逐风兽四阶段基础表现与场内排名。"},
+	"sail": {"name": "风帆读势", "fee": 5, "description": "分析所选逐风兽在当前天气中的修正与适应排名。"},
+	"calm_incense": {"name": "静心观测", "fee": 6, "description": "显示所选逐风兽的波动等级、标准差与稳定排名。"},
+	"wind_bell": {"name": "全场观风", "fee": 8, "description": "指出当前天气中受益最高的三匹逐风兽。"}
+}
 
 const RACE_BEASTS := [
 	{"id": "cloudfin", "name": "云鳍", "speed": 78, "stamina": 62, "burst": 74, "stability": 70, "course": 82, "rider": 68, "form": 5},
@@ -106,12 +116,15 @@ var locked_principal: int = 0
 var day: int = 1
 var tide: int = 1
 var weather: String = "晴"
-var inventory := {"water": 2, "earth": 2}
-var discovered := {"water": true, "earth": true}
-var shop_unlocked := {}
-var shop_stock := {}
-var locked_items := {}
-var reserved_items := {}
+var discovered := {
+	"water": true, "earth": true, "fire": true,
+	"wind": true, "wood": true, "stone": true
+}
+var attempted_pairs := {}
+var recent_synthesis_pairs: Array[String] = []
+var synthesis_discount_uses: int = 0
+var last_shop_hint: String = ""
+var last_shop_hint_key: String = ""
 var relationships := {"granny": 10, "old_joe": 0, "aqiu": 0, "mia": 0, "milo": 0, "shopkeeper": 0}
 var memories := {}
 var free_race_ticket: int = 1
@@ -148,9 +161,6 @@ var rng := RandomNumberGenerator.new()
 func _init() -> void:
 	rng.seed = 20260713
 	_load_recent_oracle_records()
-	for item_id in BASE_SHOP_ITEMS:
-		shop_unlocked[item_id] = true
-	refresh_shop()
 	_record_wealth("来到万物之岛", true)
 
 
@@ -165,16 +175,11 @@ func account_wealth() -> int:
 
 
 func asset_liquidation_value() -> int:
-	var total := 0
-	for raw_item_id in inventory.keys():
-		var item_id := str(raw_item_id)
-		if ITEMS.has(item_id) and bool(ITEMS[item_id].get("tradable", false)):
-			total += sell_price(item_id) * int(inventory.get(item_id, 0))
-	return total
+	return 0
 
 
 func net_worth() -> int:
-	return account_wealth() + asset_liquidation_value()
+	return account_wealth()
 
 
 func wealth_history_for_chart() -> Array:
@@ -325,117 +330,143 @@ func refresh_day() -> void:
 	fishing_attempts_today = 0
 	var weathers := ["晴", "阵雨", "强风"]
 	weather = weathers[rng.randi_range(0, weathers.size() - 1)]
-	# 商店只供应原材料。发现或合成过的造物不会反向进入购买目录。
-	shop_unlocked.clear()
-	for item_id in BASE_SHOP_ITEMS:
-		shop_unlocked[item_id] = true
-	refresh_shop()
-
-
-func add_item(item_id: String, amount: int = 1) -> void:
-	if amount <= 0 or not ITEMS.has(item_id):
-		return
-	inventory[item_id] = int(inventory.get(item_id, 0)) + amount
-	discovered[item_id] = true
 	changed.emit()
 
 
-func remove_item(item_id: String, amount: int = 1, ignore_protection: bool = false) -> bool:
-	if amount <= 0 or int(inventory.get(item_id, 0)) < amount:
+func is_discovered(item_id: String) -> bool:
+	return bool(discovered.get(item_id, false))
+
+
+func discover_item(item_id: String, _source: String = "world") -> bool:
+	if not ITEMS.has(item_id) or is_discovered(item_id):
 		return false
-	if not ignore_protection and is_protected(item_id):
-		return false
-	inventory[item_id] = int(inventory[item_id]) - amount
-	if int(inventory[item_id]) <= 0:
-		inventory.erase(item_id)
+	discovered[item_id] = true
 	changed.emit()
 	return true
 
 
-func is_protected(item_id: String) -> bool:
-	return bool(locked_items.get(item_id, false)) or int(reserved_items.get(item_id, 0)) > 0
+func discovered_item_ids() -> Array[String]:
+	var result: Array[String] = []
+	for raw_id in discovered.keys():
+		var item_id := str(raw_id)
+		if is_discovered(item_id) and ITEMS.has(item_id):
+			result.append(item_id)
+	result.sort_custom(func(a: String, b: String):
+		var tier_a := int(ITEMS[a].get("tier", 0))
+		var tier_b := int(ITEMS[b].get("tier", 0))
+		if tier_a != tier_b:
+			return tier_a < tier_b
+		return item_name(a) < item_name(b)
+	)
+	return result
 
 
-func toggle_lock(item_id: String) -> void:
-	if bool(locked_items.get(item_id, false)):
-		locked_items.erase(item_id)
-	else:
-		locked_items[item_id] = true
-	changed.emit()
+func item_description(item_id: String) -> String:
+	if not ITEMS.has(item_id):
+		return ""
+	return str(ITEMS[item_id].get("description", ""))
 
 
-func clear_reservation(item_id: String) -> void:
-	reserved_items.erase(item_id)
-	changed.emit()
+func synthesis_pair_key(left_id: String, right_id: String) -> String:
+	var ids := [left_id, right_id]
+	ids.sort()
+	return "%s|%s" % [ids[0], ids[1]]
 
 
-func inventory_lines() -> Array[String]:
-	var ids := inventory.keys()
-	ids.sort_custom(func(a, b): return item_name(str(a)) < item_name(str(b)))
-	var lines: Array[String] = []
-	for item_id in ids:
-		var flags: Array[String] = []
-		if bool(locked_items.get(item_id, false)):
-			flags.append("锁定")
-		if int(reserved_items.get(item_id, 0)) > 0:
-			flags.append("委托保留")
-		var suffix := ""
-		if not flags.is_empty():
-			suffix = " 〔%s〕" % "、".join(flags)
-		lines.append("%s ×%d%s" % [item_name(str(item_id)), int(inventory[item_id]), suffix])
-	return lines
+func synthesis_attempt_record(left_id: String, right_id: String) -> Dictionary:
+	return attempted_pairs.get(synthesis_pair_key(left_id, right_id), {})
+
+
+func synthesis_base_cost(left_id: String, right_id: String) -> int:
+	if not ITEMS.has(left_id) or not ITEMS.has(right_id):
+		return 0
+	var tier := maxi(int(ITEMS[left_id].get("tier", 0)), int(ITEMS[right_id].get("tier", 0)))
+	return int(SYNTHESIS_COST_BY_TIER[clampi(tier, 0, SYNTHESIS_COST_BY_TIER.size() - 1)])
+
+
+func synthesis_cost(left_id: String, right_id: String) -> int:
+	if left_id.is_empty() or right_id.is_empty():
+		return 0
+	if not synthesis_attempt_record(left_id, right_id).is_empty():
+		return 0
+	var base := synthesis_base_cost(left_id, right_id)
+	return int(ceil(float(base) * 0.5)) if synthesis_discount_uses > 0 else base
 
 
 func synthesize(queue: Array[String]) -> Dictionary:
-	if queue.is_empty():
-		return {"ok": false, "text": "造化盆还是空的。"}
-	var seen := {}
-	for item_id in queue:
-		if seen.has(item_id):
-			return {"ok": false, "text": "同一种材料一次只能投入一个实体。"}
-		seen[item_id] = true
-		if int(inventory.get(item_id, 0)) < 1:
-			return {"ok": false, "text": "材料数量不足：%s。" % item_name(item_id)}
-		if is_protected(item_id):
-			return {"ok": false, "text": "%s已被锁定或保留。" % item_name(item_id)}
+	if queue.size() != 2:
+		return {"ok": false, "success": false, "text": "造化盆需要左、右各选择一个万物。"}
+	return synthesize_pair(str(queue[0]), str(queue[1]))
 
-	var matched = _find_recipe(queue)
-	var consumed_names: Array[String] = []
-	for item_id in queue:
-		consumed_names.append(item_name(item_id))
-	for item_id in queue:
-		remove_item(item_id, 1, true)
 
-	if matched.is_empty():
-		var feedback := synthesis_failure_feedback(queue)
-		_record_wealth("合成失败")
-		changed.emit()
+func synthesize_pair(left_id: String, right_id: String) -> Dictionary:
+	if not is_discovered(left_id) or not is_discovered(right_id):
+		return {"ok": false, "success": false, "text": "只能使用已经发现的万物。"}
+	var pair_key := synthesis_pair_key(left_id, right_id)
+	var prior: Dictionary = attempted_pairs.get(pair_key, {})
+	if not prior.is_empty():
+		var repeated := prior.duplicate(true)
+		repeated["ok"] = true
+		repeated["repeat"] = true
+		repeated["first_discovery"] = false
+		repeated["cost_paid"] = 0
+		repeated["text"] = "这个组合已经记录，不再收取实验费。"
+		return repeated
+
+	var cost := synthesis_cost(left_id, right_id)
+	if cash < cost:
 		return {
-			"ok": true,
+			"ok": false,
 			"success": false,
-			"text": "%s %s" % [str(feedback["title"]), str(feedback["reason"])],
-			"failure_title": str(feedback["title"]),
-			"failure_reason": str(feedback["reason"]),
-			"suggestion": str(feedback["suggestion"]),
-			"consumed_names": consumed_names
+			"required": cost,
+			"text": "本次实验需要%d金贝，当前只有%d金贝。" % [cost, cash]
 		}
 
-	var output_id := str(matched["output"])
-	var first_discovery := not discovered.has(output_id)
-	add_item(output_id, 1)
-	_record_wealth("合成%s" % item_name(output_id))
-	var prefix := "首次发现！" if first_discovery else "合成成功。"
-	return {
-		"ok": true,
-		"success": true,
-		"output": output_id,
-		"first_discovery": first_discovery,
-		"category": str(ITEMS[output_id]["category"]),
-		"value": int(ITEMS[output_id]["value"]),
-		"collection_count": discovered_recipe_count(),
-		"collection_total": RECIPES.size(),
-		"text": "%s 获得%s ×1。" % [prefix, item_name(output_id)]
+	var used_discount := synthesis_discount_uses > 0
+	cash -= cost
+	if used_discount:
+		synthesis_discount_uses -= 1
+	var matched := _find_pair_recipe(left_id, right_id)
+	var record := {
+		"pair_key": pair_key,
+		"left_id": left_id,
+		"right_id": right_id,
+		"success": not matched.is_empty(),
+		"result_id": str(matched.get("output", "")),
+		"output": str(matched.get("output", "")),
+		"cost_paid": cost,
+		"used_discount": used_discount,
+		"day": day,
+		"tide": tide,
+		"repeat": false
 	}
+	if matched.is_empty():
+		var feedback := synthesis_failure_feedback([left_id, right_id])
+		record["failure_title"] = str(feedback["title"])
+		record["failure_reason"] = str(feedback["reason"])
+		record["suggestion"] = str(feedback["suggestion"])
+	else:
+		var output_id := str(matched["output"])
+		record["first_discovery"] = discover_item(output_id, "synthesis")
+		record["category"] = str(ITEMS[output_id]["category"])
+		record["tier"] = int(ITEMS[output_id]["tier"])
+		record["collection_count"] = discovered_recipe_count()
+		record["collection_total"] = RECIPES.size()
+		record["new_opportunities"] = count_untried_visible_pairs()
+	attempted_pairs[pair_key] = record.duplicate(true)
+	recent_synthesis_pairs.erase(pair_key)
+	recent_synthesis_pairs.push_front(pair_key)
+	while recent_synthesis_pairs.size() > 8:
+		recent_synthesis_pairs.pop_back()
+	_record_wealth("万物实验 · %s + %s" % [item_name(left_id), item_name(right_id)])
+	changed.emit()
+	var result := record.duplicate(true)
+	result["ok"] = true
+	if bool(record["success"]):
+		result["text"] = "发现%s。万物永久保留，本次支付%d金贝。" % [item_name(str(record["output"])), cost]
+	else:
+		result["text"] = "%s 本次支付%d金贝，双方万物永久保留。" % [str(record["failure_title"]), cost]
+	return result
 
 
 func discovered_recipe_count() -> int:
@@ -447,106 +478,49 @@ func discovered_recipe_count() -> int:
 
 
 func synthesis_failure_feedback(queue: Array[String]) -> Dictionary:
-	var overlap_max := 0
-	for recipe in RECIPES:
-		var overlap := 0
-		for item_id in queue:
-			if recipe["inputs"].has(item_id):
-				overlap += 1
-		overlap_max = maxi(overlap_max, overlap)
-	if queue.size() >= 4:
+	if queue.size() != 2:
+		return {"title": "选择未完成。", "reason": "造化盆只接受左右两个万物。", "suggestion": "从左右图鉴各选择一个万物。"}
+	var left_id := str(queue[0])
+	var right_id := str(queue[1])
+	if left_id == right_id:
 		return {
-			"title": "反应失衡。",
-			"reason": "投入种类过多，几股变化互相覆盖，最后没有留下稳定结构。",
-			"suggestion": "先用两种材料验证关系；只有确认需要时再加入第三种。"
+			"title": "同源静默。",
+			"reason": "两个相同万物彼此映照，却没有形成新的稳定关系。",
+			"suggestion": "保留这个万物，换另一侧为不同类别再试。"
 		}
-	if overlap_max <= 0:
+	var left_category := str(ITEMS.get(left_id, {}).get("category", ""))
+	var right_category := str(ITEMS.get(right_id, {}).get("category", ""))
+	if left_category == right_category:
 		return {
-			"title": "彼此无应。",
-			"reason": "这些材料没有产生足以维持造物的共同变化。",
-			"suggestion": "换掉其中一种材料，优先尝试性质差异明显的组合。"
-		}
-	if overlap_max == 1:
-		return {
-			"title": "有变未成。",
-			"reason": "其中一种材料已经发生反应，但另一种材料没能让变化稳定下来。",
-			"suggestion": "保留先发生变化的材料，替换另一种再试。"
+			"title": "性质重叠。",
+			"reason": "两者的性质过于接近，没有产生足以稳定的新变化。",
+			"suggestion": "保留其中一个，尝试来自另一类别的万物。"
 		}
 	return {
-		"title": "结构被冲散。",
-		"reason": "材料之间曾短暂形成结构，但额外投入让结果失去稳定。",
-		"suggestion": "减少投入种类，并留意材料进入造化盆的先后顺序。"
+		"title": "尚无稳定关系。",
+		"reason": "两者发生了短暂变化，但没有留下可以命名的新万物。",
+		"suggestion": "这组关系已经记录；从任意一侧换入另一个已发现万物。"
 	}
 
 
-func _find_recipe(queue: Array[String]) -> Dictionary:
-	# Exact full-set matches ignore order and always win.
-	for recipe in RECIPES:
+func _find_pair_recipe(left_id: String, right_id: String) -> Dictionary:
+	var target_key := synthesis_pair_key(left_id, right_id)
+	for raw_recipe in RECIPES:
+		var recipe: Dictionary = raw_recipe
 		var inputs: Array = recipe["inputs"]
-		if inputs.size() == queue.size() and _contains_all(queue, inputs):
+		if inputs.size() == 2 and synthesis_pair_key(str(inputs[0]), str(inputs[1])) == target_key:
 			return recipe
-
-	# Otherwise, the first recipe completed by queue order wins.
-	for prefix_size in range(1, queue.size() + 1):
-		var prefix := queue.slice(0, prefix_size)
-		var candidates: Array = []
-		for recipe in RECIPES:
-			if _contains_all(prefix, recipe["inputs"]):
-				candidates.append(recipe)
-		if not candidates.is_empty():
-			var best: Dictionary = candidates[0]
-			for candidate in candidates:
-				if _recipe_precedes(candidate, best, queue):
-					best = candidate
-			return best
 	return {}
 
 
-func _contains_all(haystack: Array, needles: Array) -> bool:
-	for value in needles:
-		if not haystack.has(value):
-			return false
-	return true
-
-
-func _recipe_precedes(a: Dictionary, b: Dictionary, queue: Array[String]) -> bool:
-	var positions_a: Array[int] = []
-	var positions_b: Array[int] = []
-	for item_id in a["inputs"]:
-		positions_a.append(queue.find(item_id))
-	for item_id in b["inputs"]:
-		positions_b.append(queue.find(item_id))
-	positions_a.sort()
-	positions_b.sort()
-	var count := mini(positions_a.size(), positions_b.size())
-	for index in range(count):
-		if positions_a[index] != positions_b[index]:
-			return positions_a[index] < positions_b[index]
-	return positions_a.size() > positions_b.size()
-
-
-func max_batch_for(output_id: String) -> int:
-	var recipe := get_recipe_for_output(output_id)
-	if recipe.is_empty():
-		return 0
-	var maximum := 999999
-	for item_id in recipe["inputs"]:
-		if is_protected(item_id):
-			return 0
-		maximum = mini(maximum, int(inventory.get(item_id, 0)))
-	return maximum
-
-
-func batch_craft(output_id: String, requested: int) -> Dictionary:
-	var recipe := get_recipe_for_output(output_id)
-	var amount := mini(requested, max_batch_for(output_id))
-	if recipe.is_empty() or amount <= 0:
-		return {"ok": false, "text": "材料不足，无法批量制作。"}
-	for item_id in recipe["inputs"]:
-		remove_item(item_id, amount, true)
-	add_item(output_id, amount)
-	_record_wealth("批量合成%s" % item_name(output_id))
-	return {"ok": true, "text": "批量制作%s ×%d。" % [item_name(output_id), amount]}
+func count_untried_visible_pairs() -> int:
+	var ids := discovered_item_ids()
+	var count := 0
+	for left_index in range(ids.size()):
+		for right_index in range(left_index, ids.size()):
+			if synthesis_attempt_record(ids[left_index], ids[right_index]).is_empty():
+				count += 1
+	return count
 
 
 func get_recipe_for_output(output_id: String) -> Dictionary:
@@ -556,84 +530,110 @@ func get_recipe_for_output(output_id: String) -> Dictionary:
 	return {}
 
 
-func refresh_shop() -> void:
-	shop_stock.clear()
-	for item_id in BASE_SHOP_ITEMS:
-		shop_stock[item_id] = -1
-	changed.emit()
-
-
-func shop_catalog() -> Array[String]:
-	var result: Array[String] = []
-	for item_id in BASE_SHOP_ITEMS:
-		result.append(str(item_id))
-	result.sort_custom(func(a, b): return buy_price(a) < buy_price(b))
+func shop_offers() -> Array:
+	var result: Array = []
+	for raw_offer in SHOP_OFFERS:
+		var offer: Dictionary = raw_offer.duplicate(true)
+		var offer_type := str(offer["type"])
+		var available := true
+		var state_text := "可购买"
+		if offer_type == "knowledge" and is_discovered(str(offer["unlock"])):
+			available = false
+			state_text = "已经掌握"
+		elif offer_type == "discount" and synthesis_discount_uses + int(offer["uses"]) > int(offer["cap"]):
+			available = false
+			state_text = "需要留出%d次凭证空间" % int(offer["uses"])
+		elif offer_type == "hint" and _next_synthesis_hint().is_empty():
+			available = false
+			state_text = "暂无新线索"
+		offer["available"] = available
+		offer["state_text"] = state_text
+		result.append(offer)
 	return result
 
 
-func shop_sale_catalog() -> Array[String]:
-	var result: Array[String] = []
-	for raw_item_id in inventory.keys():
-		var item_id := str(raw_item_id)
-		if int(inventory.get(item_id, 0)) <= 0:
+func shop_offer(offer_id: String) -> Dictionary:
+	for raw_offer in SHOP_OFFERS:
+		var offer: Dictionary = raw_offer
+		if str(offer["id"]) == offer_id:
+			return offer
+	return {}
+
+
+func buy_shop_offer(offer_id: String) -> Dictionary:
+	var offer := shop_offer(offer_id)
+	if offer.is_empty():
+		return {"ok": false, "text": "这项服务不存在。"}
+	var offer_type := str(offer["type"])
+	var delivery := ""
+	var delivery_key := ""
+	if offer_type == "knowledge":
+		var unlock_id := str(offer["unlock"])
+		if is_discovered(unlock_id):
+			return {"ok": false, "text": "你已经掌握%s。" % item_name(unlock_id)}
+		delivery = "永久发现%s" % item_name(unlock_id)
+	elif offer_type == "discount":
+		if synthesis_discount_uses + int(offer["uses"]) > int(offer["cap"]):
+			return {"ok": false, "text": "这项服务一次交付%d次折扣，账户最多储存%d次。" % [int(offer["uses"]), int(offer["cap"])]}
+		delivery = "增加%d次实验折扣" % int(offer["uses"])
+	elif offer_type == "hint":
+		var hint_record := _next_synthesis_hint_record()
+		delivery = str(hint_record.get("text", ""))
+		delivery_key = str(hint_record.get("pair_key", ""))
+		if delivery.is_empty():
+			return {"ok": false, "text": "目前没有可以交付的新线索。"}
+	else:
+		return {"ok": false, "text": "这项服务尚未开放。"}
+
+	var price := int(offer["price"])
+	if cash < price:
+		return {"ok": false, "text": "购买%s需要%d金贝。" % [str(offer["name"]), price]}
+	cash -= price
+	if offer_type == "knowledge":
+		discover_item(str(offer["unlock"]), "shop")
+	elif offer_type == "discount":
+		synthesis_discount_uses += int(offer["uses"])
+	elif offer_type == "hint":
+		last_shop_hint = delivery
+		last_shop_hint_key = delivery_key
+	_record_wealth("商店服务 · %s" % str(offer["name"]))
+	changed.emit()
+	return {
+		"ok": true,
+		"offer_id": offer_id,
+		"price": price,
+		"delivery": delivery,
+		"text": "%s，支付%d金贝。%s。" % [str(offer["name"]), price, delivery]
+	}
+
+
+func _next_synthesis_hint() -> String:
+	return str(_next_synthesis_hint_record().get("text", ""))
+
+
+func _next_synthesis_hint_record() -> Dictionary:
+	for raw_recipe in RECIPES:
+		var recipe: Dictionary = raw_recipe
+		var output_id := str(recipe["output"])
+		if is_discovered(output_id):
 			continue
-		if ITEMS.has(item_id) and bool(ITEMS[item_id].get("tradable", false)):
-			result.append(item_id)
-	# 造物优先，让玩家刚完成的合成品能立刻被看到和出售。
-	result.sort_custom(func(a, b):
-		var a_is_material: bool = BASE_SHOP_ITEMS.has(a)
-		var b_is_material: bool = BASE_SHOP_ITEMS.has(b)
-		if a_is_material != b_is_material:
-			return not a_is_material
-		return sell_price(a) > sell_price(b)
-	)
-	return result
-
-
-func buy_price(item_id: String) -> int:
-	return maxi(1, int(round(float(ITEMS[item_id]["value"]) * 1.3)))
-
-
-func sell_price(item_id: String) -> int:
-	return maxi(1, int(floor(float(ITEMS[item_id]["value"]) * 0.6)))
-
-
-func buy_item(item_id: String, amount: int) -> Dictionary:
-	if amount <= 0 or not BASE_SHOP_ITEMS.has(item_id):
-		return {"ok": false, "text": "商品当前不可购买。"}
-	var stock := int(shop_stock.get(item_id, 0))
-	if stock >= 0 and stock < amount:
-		return {"ok": false, "text": "库存不足。"}
-	var total := buy_price(item_id) * amount
-	if cash < total:
-		return {"ok": false, "text": "金贝不足。"}
-	cash -= total
-	if stock >= 0:
-		shop_stock[item_id] = stock - amount
-	add_item(item_id, amount)
-	_record_wealth("购买%s" % item_name(item_id))
-	var text := "购买%s ×%d，花费%d金贝。" % [item_name(item_id), amount, total]
-	if cash < suggested_reserve():
-		text += " 当前现金低于建议恢复金%d。" % suggested_reserve()
-	changed.emit()
-	return {"ok": true, "text": text}
-
-
-func sell_item(item_id: String, amount: int) -> Dictionary:
-	if amount <= 0 or not ITEMS.has(item_id) or not bool(ITEMS[item_id].get("tradable", false)):
-		return {"ok": false, "text": "该物品不能出售。"}
-	if is_protected(item_id):
-		return {"ok": false, "text": "该物品已锁定或保留，请先在背包解除。"}
-	if int(inventory.get(item_id, 0)) < amount:
-		return {"ok": false, "text": "持有数量不足。"}
-	var total := sell_price(item_id) * amount
-	remove_item(item_id, amount, true)
-	cash += total
-	if BASE_SHOP_ITEMS.has(item_id) and int(shop_stock.get(item_id, -1)) >= 0:
-		shop_stock[item_id] = int(shop_stock.get(item_id, 0)) + amount
-	_record_wealth("出售%s" % item_name(item_id))
-	changed.emit()
-	return {"ok": true, "text": "出售%s ×%d，获得%d金贝。" % [item_name(item_id), amount, total]}
+		var inputs: Array = recipe["inputs"]
+		var left_id := str(inputs[0])
+		var right_id := str(inputs[1])
+		var pair_key := synthesis_pair_key(left_id, right_id)
+		if pair_key == last_shop_hint_key or not synthesis_attempt_record(left_id, right_id).is_empty():
+			continue
+		if is_discovered(left_id):
+			return {
+				"pair_key": pair_key,
+				"text": "阿拓的线索：%s似乎会回应一种%s类万物" % [item_name(left_id), str(ITEMS[right_id]["category"])]
+			}
+		if is_discovered(right_id):
+			return {
+				"pair_key": pair_key,
+				"text": "阿拓的线索：%s似乎会回应一种%s类万物" % [item_name(right_id), str(ITEMS[left_id]["category"])]
+			}
+	return {}
 
 
 func fish_once() -> Dictionary:
@@ -647,16 +647,18 @@ func fish_once() -> Dictionary:
 	var catches := ["fish", "salt", "water", "flower", "fruit"]
 	var item_id := str(catches[rng.randi_range(0, catches.size() - 1)])
 	var coins := rng.randi_range(40, 80)
-	add_item(item_id, 1)
+	var first_discovery := discover_item(item_id, "shore")
 	cash += coins
 	advance_time(1)
 	_record_wealth("浅滩采集")
+	var observation := "首次观察%s，永久加入万物图鉴" % item_name(item_id) if first_discovery else "再次观察到%s" % item_name(item_id)
 	return {
 		"ok": true,
 		"item": item_id,
+		"first_discovery": first_discovery,
 		"coins": coins,
 		"remaining": fishing_remaining_today(),
-		"text": "你在海边找到%s ×1，并赚到%d金贝。今日浅滩还可采集%d次。" % [item_name(item_id), coins, fishing_remaining_today()]
+		"text": "%s，并赚到%d金贝。今日浅滩还可观察%d次。" % [observation, coins, fishing_remaining_today()]
 	}
 
 
@@ -664,26 +666,23 @@ func activate_aqiu_request() -> void:
 	if aqiu_request_done:
 		return
 	aqiu_request_active = true
-	reserved_items["salted_fish"] = 1
 	changed.emit()
 
 
 func turn_in_aqiu_request() -> Dictionary:
 	if aqiu_request_done:
-		return {"ok": false, "text": "阿葵已经收到你送来的咸鱼。"}
-	if int(inventory.get("salted_fish", 0)) < 1:
+		return {"ok": false, "text": "阿葵已经记下你发现的咸鱼保存方法。"}
+	if not is_discovered("salted_fish"):
 		activate_aqiu_request()
-		return {"ok": false, "text": "阿葵需要咸鱼。试试把鱼和盐放进造化盆。"}
-	remove_item("salted_fish", 1, true)
-	reserved_items.erase("salted_fish")
+		return {"ok": false, "text": "阿葵想了解一种海获保存方法。试试让鱼和盐在造化盆中相遇。"}
 	aqiu_request_done = true
 	aqiu_request_active = false
 	cash += 80
 	_record_wealth("完成阿葵委托")
 	relationships["aqiu"] = int(relationships.get("aqiu", 0)) + 8
-	add_memory("aqiu", "你为阿葵送来了赛前需要的咸鱼。")
+	add_memory("aqiu", "你把咸鱼的保存方法告诉了阿葵。")
 	changed.emit()
-	return {"ok": true, "text": "阿葵收下咸鱼，支付80金贝，并告诉你云鳍今天状态不错。"}
+	return {"ok": true, "text": "阿葵记下咸鱼的保存方法，支付80金贝，并告诉你云鳍今天状态不错。咸鱼仍永久保留在图鉴中。"}
 
 
 func add_memory(npc_id: String, text: String) -> void:
@@ -705,6 +704,95 @@ func relationship_state(npc_id: String) -> String:
 	return "信任"
 
 
+func race_aids_available() -> Array[String]:
+	var result: Array[String] = []
+	for raw_id in RACE_AIDS.keys():
+		var item_id := str(raw_id)
+		if is_discovered(item_id):
+			result.append(item_id)
+	result.sort_custom(func(a: String, b: String): return int(RACE_AIDS[a]["fee"]) < int(RACE_AIDS[b]["fee"]))
+	return result
+
+
+func race_aid_info(aid_id: String, beast_index: int) -> Dictionary:
+	if aid_id.is_empty():
+		return {"ok": true, "id": "", "name": "不使用造物", "fee": 0, "description": "使用公开信息完成判断。", "insight": "本场不部署造物。"}
+	if not RACE_AIDS.has(aid_id) or not is_discovered(aid_id):
+		return {"ok": false, "text": "这个竞速造物尚未发现。"}
+	if beast_index < 0 or beast_index >= RACE_BEASTS.size():
+		return {"ok": false, "text": "请选择逐风兽。"}
+	var aid: Dictionary = RACE_AIDS[aid_id]
+	var beast: Dictionary = RACE_BEASTS[beast_index]
+	var insight := ""
+	match aid_id:
+		"tool":
+			var bases := _race_stage_bases(beast)
+			var stage_names := ["起步", "巡航", "地形", "冲刺"]
+			var parts: Array[String] = []
+			for stage in range(4):
+				var values: Array[float] = []
+				for raw_beast in RACE_BEASTS:
+					values.append(float(_race_stage_bases(raw_beast)[stage]))
+				parts.append("%s %.1f（第%d）" % [stage_names[stage], float(bases[stage]), _descending_rank(float(bases[stage]), values)])
+			insight = "%s：%s。" % [str(beast["name"]), " / ".join(parts)]
+		"sail":
+			var modifier := _race_weather_modifier(beast)
+			var modifiers: Array[float] = []
+			for raw_beast in RACE_BEASTS:
+				modifiers.append(_race_weather_modifier(raw_beast))
+			insight = "%s在%s中的阶段修正为%+.2f，天气适应列第%d。" % [str(beast["name"]), weather, modifier, _descending_rank(modifier, modifiers)]
+		"calm_incense":
+			var sigma := 12.0 - float(beast["stability"]) * 0.08
+			var stabilities: Array[float] = []
+			for raw_beast in RACE_BEASTS:
+				stabilities.append(float(raw_beast["stability"]))
+			var level := "低波动" if sigma <= 6.0 else ("中波动" if sigma <= 7.0 else "高波动")
+			insight = "%s为%s，阶段标准差 %.2f，稳定性列第%d。" % [str(beast["name"]), level, sigma, _descending_rank(float(beast["stability"]), stabilities)]
+		"wind_bell":
+			var field: Array = []
+			for raw_beast in RACE_BEASTS:
+				field.append({"name": str(raw_beast["name"]), "modifier": _race_weather_modifier(raw_beast)})
+			field.sort_custom(func(a, b): return float(a["modifier"]) > float(b["modifier"]))
+			var leaders: Array[String] = []
+			for index in range(3):
+				leaders.append("%s %+.2f" % [str(field[index]["name"]), float(field[index]["modifier"])])
+			insight = "%s天气受益前三：%s。" % [weather, " / ".join(leaders)]
+	return {
+		"ok": true,
+		"id": aid_id,
+		"name": str(aid["name"]),
+		"fee": int(aid["fee"]),
+		"description": str(aid["description"]),
+		"insight": insight
+	}
+
+
+func _race_stage_bases(beast: Dictionary) -> Array[float]:
+	var stability := float(beast["stability"])
+	return [
+		float(beast["burst"]) * 0.45 + stability * 0.30 + float(beast["rider"]) * 0.25,
+		float(beast["speed"]) * 0.50 + float(beast["stamina"]) * 0.25 + float(beast["course"]) * 0.15 + float(beast["rider"]) * 0.10,
+		float(beast["course"]) * 0.35 + stability * 0.30 + float(beast["stamina"]) * 0.20 + float(beast["rider"]) * 0.15,
+		float(beast["burst"]) * 0.40 + float(beast["stamina"]) * 0.35 + float(beast["speed"]) * 0.15 + float(beast["rider"]) * 0.10
+	]
+
+
+func _race_weather_modifier(beast: Dictionary) -> float:
+	if weather == "阵雨":
+		return (float(beast["course"]) - 70.0) * 0.12
+	if weather == "强风":
+		return (float(beast["stability"]) - 70.0) * 0.12
+	return 0.0
+
+
+func _descending_rank(value: float, values: Array[float]) -> int:
+	var rank := 1
+	for other in values:
+		if float(other) > value:
+			rank += 1
+	return rank
+
+
 func ticket_types() -> Array[String]:
 	var result: Array[String] = ["独胜"]
 	var wealth := account_wealth()
@@ -722,21 +810,30 @@ func race_odds(beast_index: int, ticket_type: String) -> float:
 	return clampf(RACE_TARGET_RETURN / probability, 1.01, 20.0)
 
 
-func race_bet_cap() -> int:
+func race_bet_cap(available_cash: int = -1) -> int:
 	var wealth_cap := maxi(50, int(floor(float(account_wealth()) * 0.10)))
-	return mini(cash, mini(5000, wealth_cap))
+	var spendable := cash if available_cash < 0 else available_cash
+	return mini(spendable, mini(5000, wealth_cap))
 
 
-func run_race(beast_index: int, ticket_type: String, requested_bet: int) -> Dictionary:
+func run_race(beast_index: int, ticket_type: String, requested_bet: int, aid_id: String = "") -> Dictionary:
 	if beast_index < 0 or beast_index >= RACE_BEASTS.size():
 		return {"ok": false, "text": "请选择逐风兽。"}
 	if not ticket_types().has(ticket_type):
 		return {"ok": false, "text": "当前持有的金贝尚未解锁该票种。"}
+	var aid_info := race_aid_info(aid_id, beast_index)
+	if not bool(aid_info.get("ok", false)):
+		return aid_info
+	var aid_fee := int(aid_info.get("fee", 0))
+	if cash < aid_fee:
+		return {"ok": false, "text": "部署%s需要%d金贝。" % [str(aid_info.get("name", "造物")), aid_fee]}
+	var cash_before := cash
 	var used_free := free_race_ticket > 0
-	var max_bet := race_bet_cap()
+	var max_bet := race_bet_cap(cash - aid_fee)
 	if not used_free and max_bet < 10:
-		return {"ok": false, "text": "金贝不足。"}
+		return {"ok": false, "text": "支付辅助费后不足以购买最低10金贝祝胜券。"}
 	var stake := 10 if used_free else mini(max_bet, maxi(10, requested_bet))
+	cash -= aid_fee
 	if used_free:
 		free_race_ticket -= 1
 	else:
@@ -748,18 +845,10 @@ func run_race(beast_index: int, ticket_type: String, requested_bet: int) -> Dict
 		var beast: Dictionary = RACE_BEASTS[index]
 		var stability := float(beast["stability"])
 		var sigma := 12.0 - stability * 0.08
-		var start := float(beast["burst"]) * 0.45 + stability * 0.30 + float(beast["rider"]) * 0.25
-		var cruise := float(beast["speed"]) * 0.50 + float(beast["stamina"]) * 0.25 + float(beast["course"]) * 0.15 + float(beast["rider"]) * 0.10
-		var terrain := float(beast["course"]) * 0.35 + stability * 0.30 + float(beast["stamina"]) * 0.20 + float(beast["rider"]) * 0.15
-		var finish := float(beast["burst"]) * 0.40 + float(beast["stamina"]) * 0.35 + float(beast["speed"]) * 0.15 + float(beast["rider"]) * 0.10
-		var weather_mod := 0.0
-		if weather == "阵雨":
-			weather_mod = (float(beast["course"]) - 70.0) * 0.12
-		elif weather == "强风":
-			weather_mod = (stability - 70.0) * 0.12
+		var stage_bases := _race_stage_bases(beast)
+		var weather_mod := _race_weather_modifier(beast)
 		var score := float(beast["form"])
 		var stage_scores: Array[float] = []
-		var stage_bases := [start, cruise, terrain, finish]
 		for stage in range(4):
 			score += float(stage_bases[stage]) + weather_mod + rng.randfn(0.0, sigma)
 			stage_scores.append(score)
@@ -801,15 +890,23 @@ func run_race(beast_index: int, ticket_type: String, requested_bet: int) -> Dict
 		"place": place,
 		"payout": payout,
 		"stake": stake,
+		"aid_id": aid_id,
+		"aid_name": str(aid_info.get("name", "不使用造物")),
+		"aid_fee": aid_fee,
+		"aid_insight": str(aid_info.get("insight", "")),
+		"cash_before": cash_before,
+		"cash_after": cash,
+		"net_cash": cash - cash_before,
 		"free": used_free,
 		"odds": odds,
 		"bet_cap": max_bet,
 		"bet_was_capped": not used_free and requested_bet > max_bet,
 		"results": results,
 		"stage_reports": stage_reports,
-		"text": "%s获得第%d名。%s" % [
+		"text": "%s获得第%d名。%s%s" % [
 			RACE_BEASTS[beast_index]["name"], place,
-			("返还%d金贝。" % payout) if won else "祝胜券未命中。"
+			("返还%d金贝。" % payout) if won else "祝胜券未命中。",
+			(" %s部署费%d金贝。" % [str(aid_info.get("name", "造物")), aid_fee]) if aid_fee > 0 else ""
 		]
 	}
 
