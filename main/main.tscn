@@ -1,0 +1,64 @@
+[gd_scene load_steps=9 format=3]
+
+[ext_resource type="Script" path="res://scripts/main.gd" id="1_main"]
+[ext_resource type="Script" path="res://scripts/world_view.gd" id="2_world"]
+[ext_resource type="Script" path="res://scripts/player.gd" id="3_player"]
+[ext_resource type="PackedScene" path="res://scenes/components/pixel_character_animator.tscn" id="4_pixel_character"]
+[ext_resource type="Texture2D" path="res://assets/art/characters/old_qiao/world/old_qiao_world_atlas_v1.png" id="5_old_qiao_world"]
+[ext_resource type="Script" path="res://scripts/old_qiao_world_sample.gd" id="6_old_qiao_sample"]
+
+[sub_resource type="CapsuleShape2D" id="Capsule_player"]
+radius = 14.0
+height = 34.0
+
+[sub_resource type="RectangleShape2D" id="Rectangle_wall"]
+size = Vector2(1800, 20)
+
+[node name="Main" type="Node2D"]
+script = ExtResource("1_main")
+
+[node name="World" type="Node2D" parent="."]
+script = ExtResource("2_world")
+
+[node name="TopWall" type="StaticBody2D" parent="World"]
+position = Vector2(900, 30)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="World/TopWall"]
+shape = SubResource("Rectangle_wall")
+
+[node name="BottomWall" type="StaticBody2D" parent="World"]
+position = Vector2(900, 610)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="World/BottomWall"]
+shape = SubResource("Rectangle_wall")
+
+[node name="OldQiaoSample" type="Node2D" parent="World"]
+position = Vector2(1010, 225)
+script = ExtResource("6_old_qiao_sample")
+
+[node name="PixelCharacterAnimator" parent="World/OldQiaoSample" instance=ExtResource("4_pixel_character")]
+atlas_texture = ExtResource("5_old_qiao_world")
+walk_frame_count = 4
+
+[node name="Player" type="CharacterBody2D" parent="."]
+position = Vector2(105, 340)
+script = ExtResource("3_player")
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Player"]
+shape = SubResource("Capsule_player")
+
+[node name="PixelCharacterAnimator" parent="Player" instance=ExtResource("4_pixel_character")]
+foot_anchor_offset = Vector2(0, 17)
+
+[node name="Camera2D" type="Camera2D" parent="Player"]
+position = Vector2(0, -30)
+position_smoothing_enabled = true
+position_smoothing_speed = 6.0
+limit_left = 0
+limit_top = 0
+limit_right = 1800
+limit_bottom = 650
+
+[node name="Markers" type="Node2D" parent="."]
+
+[node name="UILayer" type="CanvasLayer" parent="."]

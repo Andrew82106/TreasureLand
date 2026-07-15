@@ -1,0 +1,15 @@
+# Local agent/workspace metadata
+.agents/
+.codex/
+
+# Godot editor cache and generated imports
+main/.godot/
+
+# Generated visual-regression snapshots
+main/tests/artifacts/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.tmp
+*.log
