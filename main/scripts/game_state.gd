@@ -4,53 +4,13 @@ class_name GameState
 signal changed
 signal notice(text: String)
 
-const ITEMS := {
-	"water": {"name": "水", "tier": 1, "category": "根源", "description": "流动、冷却、滋养与侵蚀的起点。", "art_source": "material", "art_index": 0},
-	"fire": {"name": "火", "tier": 1, "category": "根源", "description": "加热、转化、烧制与释放力量的起点。", "art_source": "material", "art_index": 2},
-	"earth": {"name": "土", "tier": 1, "category": "根源", "description": "承载、混合、堆积与孕育的起点。", "art_source": "material", "art_index": 1},
-	"steam": {"name": "蒸汽", "tier": 2, "category": "天象", "description": "水受热后获得上升与膨胀的形态。", "art_source": "creation", "art_index": 2},
-	"mud": {"name": "泥", "tier": 2, "category": "地貌", "description": "水进入土后形成可流动、可塑形的介质。", "art_source": "creation", "art_index": 0},
-	"lava": {"name": "熔岩", "tier": 2, "category": "地貌", "description": "土石受极热后形成的高温流体。", "art_source": "creation", "art_index": 1},
-	"cloud": {"name": "云", "tier": 3, "category": "天象", "description": "蒸汽聚集并重新携带水分。", "art_source": "material", "art_index": 4},
-	"energy": {"name": "动力", "tier": 3, "category": "原理", "description": "蒸汽在持续热量中表现出的压力与做功能力。", "art_source": "material", "art_index": 9},
-	"swamp": {"name": "沼泽", "tier": 3, "category": "生境", "description": "水分长期停留在泥地形成的湿润环境。", "art_source": "material", "art_index": 12},
-	"pottery": {"name": "陶器", "tier": 3, "category": "工艺", "description": "泥经火烧获得固定而耐久的形状。", "art_source": "creation", "art_index": 3},
-	"obsidian": {"name": "黑曜石", "tier": 3, "category": "地质", "description": "熔岩被水快速冷却形成的锋利火山玻璃。", "art_source": "material", "art_index": 5},
-	"mountain": {"name": "山岳", "tier": 3, "category": "地貌", "description": "熔岩与大地长期堆积、抬升形成的高地。", "art_source": "material", "art_index": 5},
-	"rain": {"name": "雨", "tier": 4, "category": "天象", "description": "云在山岳抬升与降温中释放水分。", "art_source": "material", "art_index": 0},
-	"thunderstorm": {"name": "雷暴", "tier": 4, "category": "天象", "description": "云层中的动力累积为剧烈天气。", "art_source": "material", "art_index": 2},
-	"life": {"name": "生命", "tier": 4, "category": "生灵", "description": "湿润生境在持续变化中产生自我延续。", "art_source": "material", "art_index": 12},
-	"fertile_soil": {"name": "沃土", "tier": 4, "category": "生境", "description": "沼泽沉积物与大地结合形成肥沃土壤。", "art_source": "material", "art_index": 1},
-	"water_jar": {"name": "水罐", "tier": 4, "category": "生活", "description": "陶器获得盛水与运输的明确用途。", "art_source": "creation", "art_index": 3},
-	"kiln": {"name": "窑炉", "tier": 4, "category": "工艺", "description": "陶器与火共同形成可持续烧制的设施。", "art_source": "creation", "art_index": 7},
-	"stone_blade": {"name": "石刃", "tier": 4, "category": "工艺", "description": "山石敲击黑曜石形成可控制的锋面。", "art_source": "creation", "art_index": 4},
-	"ore_vein": {"name": "矿脉", "tier": 4, "category": "地质", "description": "山岳内部的热活动使矿物聚集成带。", "art_source": "material", "art_index": 9},
-	"river": {"name": "河流", "tier": 4, "category": "地貌", "description": "水沿山势持续汇集并刻出稳定通路。", "art_source": "material", "art_index": 4}
-}
-
-const RECIPES := [
-	{"inputs": ["water", "fire"], "output": "steam", "relation": "相变", "logic": "水受热后成为上升的气态水。"},
-	{"inputs": ["water", "earth"], "output": "mud", "relation": "混合", "logic": "水进入土，使土变得湿润并可塑。"},
-	{"inputs": ["fire", "earth"], "output": "lava", "relation": "相变", "logic": "大地在极热中熔化并流动。"},
-	{"inputs": ["steam", "water"], "output": "cloud", "relation": "聚集", "logic": "更多水分让蒸汽聚集成可见云层。"},
-	{"inputs": ["steam", "fire"], "output": "energy", "relation": "催化", "logic": "持续加热使蒸汽产生压力与做功能力。"},
-	{"inputs": ["mud", "water"], "output": "swamp", "relation": "生境", "logic": "水长期停留在泥地形成湿地。"},
-	{"inputs": ["mud", "fire"], "output": "pottery", "relation": "塑形", "logic": "可塑的泥经烧制固定形状。"},
-	{"inputs": ["lava", "water"], "output": "obsidian", "relation": "冷却", "logic": "熔岩急冷形成玻璃质岩石。"},
-	{"inputs": ["lava", "earth"], "output": "mountain", "relation": "地貌", "logic": "熔岩在大地上堆积、凝固并抬升地形。"},
-	{"inputs": ["cloud", "mountain"], "output": "rain", "relation": "天象", "logic": "山岳迫使云层抬升降温，水分落下。"},
-	{"inputs": ["cloud", "energy"], "output": "thunderstorm", "relation": "天象", "logic": "云层中的运动与电势累积为剧烈天气。"},
-	{"inputs": ["swamp", "energy"], "output": "life", "relation": "催化", "logic": "湿润环境在持续能量中产生自我延续结构。"},
-	{"inputs": ["swamp", "earth"], "output": "fertile_soil", "relation": "沉积", "logic": "湿地残留物与土壤结合，形成富含养分的土地。"},
-	{"inputs": ["pottery", "water"], "output": "water_jar", "relation": "容纳", "logic": "固定器形因为盛水而获得明确用途。"},
-	{"inputs": ["pottery", "fire"], "output": "kiln", "relation": "工艺", "logic": "耐火器壁围住热量，形成持续烧制空间。"},
-	{"inputs": ["obsidian", "mountain"], "output": "stone_blade", "relation": "塑形", "logic": "坚硬山石敲击黑曜石，剥落出锋利刃缘。"},
-	{"inputs": ["mountain", "fire"], "output": "ore_vein", "relation": "地质", "logic": "山体内部热活动搬运并集中矿物。"},
-	{"inputs": ["mountain", "water"], "output": "river", "relation": "地貌", "logic": "水沿高差汇集，长期侵蚀出固定通道。"}
-]
+const SynthesisCatalog = preload("res://scripts/synthesis_catalog.gd")
+const ITEMS := SynthesisCatalog.ITEMS
+const RECIPES := SynthesisCatalog.RECIPES
 
 const INITIAL_DISCOVERIES := ["water", "fire", "earth"]
-const SYNTHESIS_COST_BY_TIER := [2, 5, 12, 30]
+const MAX_SYNTHESIS_TIER := 4
+const SYNTHESIS_COST_BY_TIER := [2, 5, 12]
 const SHOP_OFFERS := [
 	{"id": "recipe_hint", "name": "配方方向线索", "type": "hint", "price": 12, "art": "cloud", "description": "公开一个已知万物、目标阶层和关系语法，不直接揭晓答案。"},
 	{"id": "experiment_discount", "name": "三次实验折扣", "type": "discount", "price": 24, "art": "energy", "uses": 3, "cap": 6, "description": "接下来三次新组合实验费减半，向上取整。"}
@@ -423,8 +383,14 @@ func synthesis_attempt_record(left_id: String, right_id: String) -> Dictionary:
 	return attempted_pairs.get(synthesis_pair_key(left_id, right_id), {})
 
 
-func synthesis_base_cost(left_id: String, right_id: String) -> int:
+func can_synthesize_pair(left_id: String, right_id: String) -> bool:
 	if not ITEMS.has(left_id) or not ITEMS.has(right_id):
+		return false
+	return maxi(item_tier(left_id), item_tier(right_id)) < MAX_SYNTHESIS_TIER
+
+
+func synthesis_base_cost(left_id: String, right_id: String) -> int:
+	if not can_synthesize_pair(left_id, right_id):
 		return 0
 	var tier := maxi(int(ITEMS[left_id].get("tier", 0)), int(ITEMS[right_id].get("tier", 0)))
 	return int(SYNTHESIS_COST_BY_TIER[clampi(tier - 1, 0, SYNTHESIS_COST_BY_TIER.size() - 1)])
@@ -448,6 +414,14 @@ func synthesize(queue: Array[String]) -> Dictionary:
 func synthesize_pair(left_id: String, right_id: String) -> Dictionary:
 	if not is_discovered(left_id) or not is_discovered(right_id):
 		return {"ok": false, "success": false, "text": "只能使用已经发现的万物。"}
+	if not can_synthesize_pair(left_id, right_id):
+		return {
+			"ok": false,
+			"success": false,
+			"terminal": true,
+			"cost_paid": 0,
+			"text": "四阶万物是当前谱系终点；五阶开放前不会扣款或记录这次选择。"
+		}
 	var pair_key := synthesis_pair_key(left_id, right_id)
 	var prior: Dictionary = attempted_pairs.get(pair_key, {})
 	if not prior.is_empty():

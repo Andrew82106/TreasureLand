@@ -693,9 +693,9 @@ func _open_tower() -> void:
 	modal_body.add_child(_make_text("塔身会回应你真正理解并留下的关系。当前谱系：%d / %d。" % [count, game.RECIPES.size()], Color("d8f4f8")))
 	var floors := [
 		{"need": 3, "name": "潮火基座", "reward": "发现全部二阶万物"},
-		{"need": 9, "name": "云泥回廊", "reward": "发现全部三阶万物"},
-		{"need": 15, "name": "众生工坊", "reward": "发现至少六种四阶万物"},
-		{"need": 18, "name": "四象观台", "reward": "完成四阶万物谱系"}
+		{"need": 14, "name": "云泥回廊", "reward": "发现全部十一种三阶万物"},
+		{"need": 34, "name": "众生工坊", "reward": "发现至少二十种四阶万物"},
+		{"need": 69, "name": "四象观台", "reward": "完成七十二种万物的四阶谱系"}
 	]
 	for raw_floor in floors:
 		var floor: Dictionary = raw_floor

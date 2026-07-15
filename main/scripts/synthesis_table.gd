@@ -243,8 +243,10 @@ func _build_center_stage() -> PanelContainer:
 	var ready := not left_id.is_empty() and not right_id.is_empty()
 	var prior: Dictionary = game.synthesis_attempt_record(left_id, right_id) if ready else {}
 	var cost: int = int(game.synthesis_cost(left_id, right_id)) if ready else 0
-	var blocked: bool = busy or not ready or (prior.is_empty() and game.cash < cost)
-	action_button = _button("查看记录 · 0金贝" if not prior.is_empty() else "开始实验 · %d金贝" % cost, _submit, blocked, 172)
+	var terminal: bool = ready and not game.can_synthesize_pair(left_id, right_id)
+	var blocked: bool = busy or not ready or terminal or (prior.is_empty() and game.cash < cost)
+	var action_text := "四阶终点" if terminal else ("查看记录 · 0金贝" if not prior.is_empty() else "开始实验 · %d金贝" % cost)
+	action_button = _button(action_text, _submit, blocked, 172)
 	action_row.add_child(action_button)
 	action_row.add_child(_button("清空", _clear_selection, busy or not ready, 82))
 	box.add_child(action_row)
@@ -317,6 +319,8 @@ func _stage_status_text() -> String:
 		return "%s\n%s\n%s" % [str(last_result.get("failure_title", "没有形成稳定关系")), str(last_result.get("failure_reason", "")), str(last_result.get("suggestion", ""))]
 	if left_id.is_empty() or right_id.is_empty():
 		return "从左右图鉴各选择一个万物。"
+	if not game.can_synthesize_pair(left_id, right_id):
+		return "四阶万物是当前谱系终点；五阶开放前不能继续推演，也不会收取金贝。"
 	var prior: Dictionary = game.synthesis_attempt_record(left_id, right_id)
 	if not prior.is_empty():
 		return "这段关系已有记录，再次查看不收取金贝。"
@@ -387,7 +391,7 @@ func _build_graph_overlay() -> ColorRect:
 	header.add_child(title)
 	header.add_child(_button("关闭组合谱", _hide_graph, false, 130))
 	column.add_child(header)
-	column.add_child(_label("已发现关系显示完整因果；未知节点保留暗格。四阶原型共21个万物、18条固定关系。", Color("a9c7c4"), 15))
+	column.add_child(_label("已发现关系显示完整因果；未知节点保留暗格。四阶原型共%d个万物、%d条固定关系。" % [game.ITEMS.size(), game.RECIPES.size()], Color("a9c7c4"), 15))
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	column.add_child(scroll)
@@ -409,12 +413,20 @@ func _graph_tier_section(tier: int) -> PanelContainer:
 	section.add_child(box)
 	box.add_child(_label("%d阶 · %d/%d" % [tier, int(progress["found"]), int(progress["total"])], Color("8ee0b1") if bool(progress["complete"]) else Color("f0d27e"), 20))
 	var item_names: Array[String] = []
+	var hidden_items := 0
 	for raw_id in game.ITEMS.keys():
 		var item_id := str(raw_id)
 		if game.item_tier(item_id) == tier:
-			item_names.append(game.item_name(item_id) if game.is_discovered(item_id) else "◇ 未发现")
-	box.add_child(_label("　".join(item_names), Color("c7dad7"), 15))
+			if game.is_discovered(item_id):
+				item_names.append(game.item_name(item_id))
+			else:
+				hidden_items += 1
+	if not item_names.is_empty():
+		box.add_child(_label("已发现：%s" % "　".join(item_names), Color("c7dad7"), 15))
+	if hidden_items > 0:
+		box.add_child(_label("◇ 未发现暗格 × %d" % hidden_items, Color("718c8f"), 15))
 	if tier > 1:
+		var hidden_relations := 0
 		for raw_recipe in game.RECIPES:
 			var recipe: Dictionary = raw_recipe
 			var output_id := str(recipe["output"])
@@ -424,7 +436,9 @@ func _graph_tier_section(tier: int) -> PanelContainer:
 				var inputs: Array = recipe["inputs"]
 				box.add_child(_label("%s + %s → %s　[%s] %s" % [game.item_name(str(inputs[0])), game.item_name(str(inputs[1])), game.item_name(output_id), str(recipe.get("relation", "关系")), str(recipe.get("logic", ""))], Color("a8cbc4"), 14))
 			else:
-				box.add_child(_label("？ + ？ → ◇ %d阶未发现万物" % tier, Color("647f82"), 14))
+				hidden_relations += 1
+		if hidden_relations > 0:
+			box.add_child(_label("尚有%d条本阶关系等待验证" % hidden_relations, Color("647f82"), 14))
 	return section
 
 

@@ -15,7 +15,7 @@ func _run() -> void:
 	_test_request_uses_water_jar_without_consumption()
 	_test_race_insights_are_information_only()
 	await _test_full_screen_synthesis_ui()
-	print("DISCOVERY SYSTEM TEST PASS: four tiers, full-screen basin, services and race insights")
+	print("DISCOVERY SYSTEM TEST PASS: 72 items, 69 relations, four tiers and full-screen basin")
 	quit(0)
 
 
@@ -23,7 +23,19 @@ func _test_four_tier_recipe_graph() -> void:
 	var state = GameStateScript.new()
 	var initial_ids: Array[String] = state.discovered_item_ids()
 	assert(initial_ids.size() == 3 and initial_ids.has("water") and initial_ids.has("fire") and initial_ids.has("earth"), "开局图鉴必须严格只有水、火、土")
-	assert(state.ITEMS.size() == 21 and state.RECIPES.size() == 18, "四阶原型必须固定为21个万物和18条配方")
+	assert(state.ITEMS.size() == 72 and state.RECIPES.size() == 69, "四阶原型必须固定为72个万物和69条配方")
+	var item_counts := {1: 0, 2: 0, 3: 0, 4: 0}
+	var recipe_counts := {2: 0, 3: 0, 4: 0}
+	for raw_id in state.ITEMS.keys():
+		var item_id := str(raw_id)
+		var tier := state.item_tier(item_id)
+		assert(item_counts.has(tier), "所有万物必须属于一至四阶")
+		var art_source := state.item_art_source(item_id)
+		var art_index := state.item_art_index(item_id)
+		assert(art_source == "material" or art_source == "creation", "每个万物必须映射到受支持的插图图集")
+		assert(art_index >= 0 and art_index < (9 if art_source == "creation" else 16), "每个万物的插图索引必须位于对应图集范围内")
+		item_counts[tier] = int(item_counts[tier]) + 1
+	assert(item_counts == {1: 3, 2: 3, 3: 11, 4: 55}, "四阶规模必须为3→3→11→55")
 
 	var pair_keys := {}
 	var outputs := {}
@@ -32,11 +44,18 @@ func _test_four_tier_recipe_graph() -> void:
 		var inputs: Array = recipe["inputs"]
 		var pair_key: String = state.synthesis_pair_key(str(inputs[0]), str(inputs[1]))
 		var output_id := str(recipe["output"])
+		var output_tier := state.item_tier(output_id)
 		assert(not pair_keys.has(pair_key), "每个无序输入组合只能存在一条配方")
 		assert(not outputs.has(output_id), "四阶原型中每个结果必须只有一个固定来源")
 		assert(not str(recipe.get("relation", "")).is_empty() and not str(recipe.get("logic", "")).is_empty(), "每条配方必须固定关系类型与内在逻辑")
+		assert(state.item_tier(str(inputs[0])) < output_tier and state.item_tier(str(inputs[1])) < output_tier, "结果必须由更早阶层的两个万物生成")
+		recipe_counts[output_tier] = int(recipe_counts[output_tier]) + 1
 		pair_keys[pair_key] = true
 		outputs[output_id] = true
+	assert(recipe_counts == {2: 3, 3: 11, 4: 55}, "每个非根万物必须恰好对应一条成功关系")
+	assert(int(recipe_counts[2]) == _ceil_relation_count(3, 1.0), "一到二阶必须为100%组合覆盖")
+	assert(int(recipe_counts[3]) == _ceil_relation_count(6, 0.70), "二到三阶必须为70%组合覆盖并向上取整")
+	assert(int(recipe_counts[4]) == _ceil_relation_count(17, 0.40), "三到四阶必须为40%组合覆盖并向上取整")
 
 	for tier in range(1, 4):
 		for raw_id in state.ITEMS.keys():
@@ -67,7 +86,11 @@ func _test_four_tier_recipe_graph() -> void:
 		assert(state.is_discovered(str(inputs[0])) and state.is_discovered(str(inputs[1])), "按阶推进时配方输入必须已经发现")
 		var result: Dictionary = state.synthesize_pair(str(inputs[0]), str(inputs[1]))
 		assert(bool(result.get("success", false)) and state.is_discovered(output_id), "完整谱系必须能够按固定关系推进")
-	assert(state.discovered_item_ids().size() == 21 and state.discovered_recipe_count() == 18, "走完18条关系后必须完成21个万物的四阶图鉴")
+	assert(state.discovered_item_ids().size() == 72 and state.discovered_recipe_count() == 69, "走完69条关系后必须完成72个万物的四阶图鉴")
+	var terminal_cash: int = int(state.cash)
+	var terminal: Dictionary = state.synthesize_pair("rain", "river")
+	assert(not bool(terminal.get("ok", true)) and bool(terminal.get("terminal", false)), "四阶万物必须作为当前版本的谱系终点")
+	assert(state.cash == terminal_cash and state.synthesis_attempt_record("rain", "river").is_empty(), "未开放的五阶选择不得扣款或写入失败记录")
 
 
 func _test_permanent_pair_costs_and_failures() -> void:
@@ -165,12 +188,12 @@ func _test_full_screen_synthesis_ui() -> void:
 	assert(table.left_library != null and table.right_library != null, "独立页面必须建立左右两个万物图鉴")
 	assert(table.left_library.get_child_count() == 3 and table.right_library.get_child_count() == 3, "开局左右图鉴都必须只显示水、火、土")
 	assert(table.center_stage != null and not _has_ancestor_class(table.center_stage, "ScrollContainer"), "中央实验舞台必须固定且不能随图鉴滚动")
-	assert(_tree_contains_text(table.page_root, "1阶 3/3") and _tree_contains_text(table.page_root, "4阶 0/9"), "顶部必须显式展示四阶发现进度")
+	assert(_tree_contains_text(table.page_root, "1阶 3/3") and _tree_contains_text(table.page_root, "4阶 0/55"), "顶部必须显式展示四阶发现进度")
 	table._select_item("left", "water")
 	table._select_item("right", "fire")
 	assert(_tree_contains_text(table.center_stage, "首次尝试这段关系需要2金贝"), "中央舞台必须在提交前显示准确费用")
 	table._show_graph()
-	assert(table.graph_overlay.visible and _tree_contains_text(table.graph_overlay, "四阶原型共21个万物、18条固定关系"), "页面内必须提供可查询的四阶组合谱")
+	assert(table.graph_overlay.visible and _tree_contains_text(table.graph_overlay, "四阶原型共72个万物、69条固定关系"), "页面内必须提供可查询的四阶组合谱")
 	table._hide_graph()
 	assert(not _tree_contains_text(table.page_root, "物品数量") and not _tree_contains_text(table.page_root, "批量制作"), "独立页面不得出现数量背包或批量制作旧入口")
 	table.request_close()
@@ -183,6 +206,10 @@ func _race_order(result: Dictionary) -> Array[String]:
 	for raw_entry in result.get("results", []):
 		names.append(str(raw_entry["name"]))
 	return names
+
+
+func _ceil_relation_count(pool_size: int, coverage: float) -> int:
+	return int(ceil(float(pool_size * (pool_size - 1)) * 0.5 * coverage))
 
 
 func _tree_contains_text(node: Node, needle: String) -> bool:
