@@ -13,6 +13,7 @@ from typing import Sequence
 
 
 EXPECTED_GODOT_VERSION = "4.7.stable"
+COMMAND_TIMEOUT_SECONDS = 120
 
 BLOCKING_TESTS: tuple[tuple[str, str], ...] = (
     ("res://tests/discovery_system_test.gd", "DISCOVERY SYSTEM TEST PASS"),
@@ -71,12 +72,29 @@ def stream_command(command: Sequence[str], label: str) -> tuple[int, str]:
         encoding="utf-8",
         errors="replace",
     )
-    output_lines: list[str] = []
-    assert process.stdout is not None
-    for line in process.stdout:
-        print(line, end="", flush=True)
-        output_lines.append(line)
-    return process.wait(), "".join(output_lines)
+    try:
+        output, _ = process.communicate(timeout=COMMAND_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        output, _ = process.communicate()
+        timeout_message = (
+            f"ERROR: {label} exceeded {COMMAND_TIMEOUT_SECONDS}s and was terminated.\n"
+        )
+        print(output, end="", flush=True)
+        print(timeout_message, end="", file=sys.stderr, flush=True)
+        return 124, output + timeout_message
+    print(output, end="", flush=True)
+    return process.returncode, output
+
+
+def write_step_summary(title: str, details: Sequence[str]) -> None:
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+    with Path(summary_path).open("a", encoding="utf-8") as summary:
+        summary.write(f"## {title}\n\n")
+        for detail in details:
+            summary.write(f"- {detail}\n")
 
 
 def run_suite(godot: str, project: Path) -> int:
@@ -103,6 +121,10 @@ def run_suite(godot: str, project: Path) -> int:
     )
     import_errors = ("SCRIPT ERROR", "Parse Error", "Failed to load script")
     if import_code != 0 or any(marker in import_output for marker in import_errors):
+        write_step_summary(
+            "Godot CI failed",
+            [f"Project import/parse exited with code {import_code}."],
+        )
         print(
             f"ERROR: project import or script parse failed with exit code {import_code}.",
             file=sys.stderr,
@@ -117,17 +139,24 @@ def run_suite(godot: str, project: Path) -> int:
         )
         if code != 0:
             failures.append(f"{test_path}: exited with code {code}")
+            if code == 124:
+                break
         elif pass_marker not in output:
             failures.append(f"{test_path}: missing pass marker {pass_marker!r}")
 
     print("\n:: CI summary", flush=True)
     if failures:
+        write_step_summary("Godot CI failed", failures)
         for failure in failures:
             print(f"FAIL: {failure}", file=sys.stderr)
         print(f"{len(failures)} blocking check(s) failed.", file=sys.stderr)
         return 1
 
     print(f"PASS: project import and all {len(BLOCKING_TESTS)} blocking tests.")
+    write_step_summary(
+        "Godot CI passed",
+        [f"Project import and all {len(BLOCKING_TESTS)} blocking tests passed."],
+    )
     return 0
 
 
