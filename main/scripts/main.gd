@@ -3,25 +3,12 @@ extends Node2D
 const GameStateScript = preload("res://scripts/game_state.gd")
 const MarkerScript = preload("res://scripts/interactable.gd")
 const PokerTableScript = preload("res://scripts/poker_table.gd")
+const SynthesisTableScript = preload("res://scripts/synthesis_table.gd")
 const WealthChartScript = preload("res://scripts/wealth_chart.gd")
 const IslandPanorama = preload("res://assets/art/island_panorama_v1.png")
 const SynthesisCollectionAtlas = preload("res://assets/art/synthesis_collection_atlas_v1.png")
 const RaceBanner = preload("res://assets/art/race_banner_v1.png")
 const ShopMaterialAtlas = preload("res://assets/art/shop_material_atlas_v1.png")
-
-const COLLECTION_OUTPUTS := ["mud", "charcoal", "fog", "pottery", "tool", "sail", "salted_fish", "calm_incense", "wind_bell"]
-const MATERIAL_ITEMS := ["water", "earth", "fire", "wood", "wind", "stone", "fish", "fruit", "salt", "metal", "cloth", "paper", "flower"]
-const COLLECTION_DESCRIPTIONS := {
-	"mud": "水与土安静结合后的第一种稳定造物。",
-	"charcoal": "木在火中留下的凝练热量。",
-	"fog": "被风托住、暂时不肯落下的水。",
-	"pottery": "泥经历火之后获得了可以长久保存的形状。",
-	"tool": "木提供握持，金提供改变世界的锋面。",
-	"sail": "布接住风，第一次把方向变成力量。",
-	"salted_fish": "海获与盐共同换来的耐储食物。",
-	"calm_incense": "炭托起花香，让纷乱慢慢沉静。",
-	"wind_bell": "金属替无形的风留下了声音。"
-}
 
 @onready var player: CharacterBody2D = $Player
 @onready var markers_root: Node2D = $Markers
@@ -31,8 +18,6 @@ var game
 var markers: Array[Node2D] = []
 var marker_by_id := {}
 var nearest_marker: Node2D
-var synthesis_left_id: String = ""
-var synthesis_right_id: String = ""
 var discovered_areas := {"漂流湾": true}
 var current_area := "漂流湾"
 
@@ -47,9 +32,7 @@ var modal_overlay: ColorRect
 var modal_title: Label
 var modal_body: VBoxContainer
 var poker_table: Control
-var synthesis_left_library: GridContainer
-var synthesis_right_library: GridContainer
-var synthesis_stage: PanelContainer
+var synthesis_table: Control
 
 var race_beast_option: OptionButton
 var race_ticket_option: OptionButton
@@ -83,6 +66,8 @@ func _ready() -> void:
 		_open_collection()
 	elif user_args.has("preview-shop"):
 		_open_shop()
+	elif user_args.has("preview-synthesis"):
+		_open_synthesis()
 
 
 func _process(_delta: float) -> void:
@@ -94,6 +79,10 @@ func _process(_delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("ui_cancel") and synthesis_table != null and synthesis_table.visible:
+		synthesis_table.request_close()
+		get_viewport().set_input_as_handled()
+		return
 	if event.is_action_pressed("ui_cancel") and poker_table != null and poker_table.visible:
 		poker_table.request_close()
 		get_viewport().set_input_as_handled()
@@ -240,6 +229,10 @@ func _build_ui() -> void:
 	poker_table.setup(game)
 	poker_table.closed.connect(_on_poker_table_closed)
 	ui_root.add_child(poker_table)
+	synthesis_table = SynthesisTableScript.new()
+	synthesis_table.setup(game)
+	synthesis_table.closed.connect(_on_synthesis_table_closed)
+	ui_root.add_child(synthesis_table)
 
 
 func _panel_style(background: Color, border: Color) -> StyleBoxFlat:
@@ -304,35 +297,20 @@ func _art_banner(texture: Texture2D, height: float = 180.0) -> TextureRect:
 	return art
 
 
-func _collection_art(item_id: String, size_value: float = 150.0, discovered_value: bool = true) -> TextureRect:
-	var index := COLLECTION_OUTPUTS.find(item_id)
-	var atlas := AtlasTexture.new()
-	atlas.atlas = SynthesisCollectionAtlas
-	var tile_width := float(SynthesisCollectionAtlas.get_width()) / 3.0
-	var tile_height := float(SynthesisCollectionAtlas.get_height()) / 3.0
-	var column := index % 3
-	var row := index / 3
-	atlas.region = Rect2(column * tile_width, row * tile_height, tile_width, tile_height)
-	var art := TextureRect.new()
-	art.texture = atlas
-	art.custom_minimum_size = Vector2(size_value, size_value)
-	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	art.modulate = Color.WHITE if discovered_value else Color("22353ad9")
-	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	return art
-
-
 func _item_art(item_id: String, size_value: float = 150.0, discovered_value: bool = true) -> TextureRect:
-	if COLLECTION_OUTPUTS.has(item_id):
-		return _collection_art(item_id, size_value, discovered_value)
-	var index := MATERIAL_ITEMS.find(item_id)
 	var atlas := AtlasTexture.new()
-	atlas.atlas = ShopMaterialAtlas
-	var tile_width := float(ShopMaterialAtlas.get_width()) / 4.0
-	var tile_height := float(ShopMaterialAtlas.get_height()) / 4.0
-	var safe_index := maxi(0, index)
-	atlas.region = Rect2((safe_index % 4) * tile_width, (safe_index / 4) * tile_height, tile_width, tile_height)
+	var source: String = str(game.item_art_source(item_id))
+	var index: int = int(game.item_art_index(item_id))
+	if source == "creation":
+		atlas.atlas = SynthesisCollectionAtlas
+		var tile_width := float(SynthesisCollectionAtlas.get_width()) / 3.0
+		var tile_height := float(SynthesisCollectionAtlas.get_height()) / 3.0
+		atlas.region = Rect2((index % 3) * tile_width, (index / 3) * tile_height, tile_width, tile_height)
+	else:
+		atlas.atlas = ShopMaterialAtlas
+		var tile_width := float(ShopMaterialAtlas.get_width()) / 4.0
+		var tile_height := float(ShopMaterialAtlas.get_height()) / 4.0
+		atlas.region = Rect2((index % 4) * tile_width, (index / 4) * tile_height, tile_width, tile_height)
 	var art := TextureRect.new()
 	art.texture = atlas
 	art.custom_minimum_size = Vector2(size_value, size_value)
@@ -388,7 +366,7 @@ func _update_nearest_marker() -> void:
 	for marker in markers:
 		marker.set_highlighted(marker == nearest_marker)
 	if nearest_marker == null:
-		prompt_label.text = "%s · WASD / 方向键移动 · I / Tab 背包" % current_area
+		prompt_label.text = "%s · WASD / 方向键移动 · I / Tab 万物图鉴" % current_area
 	else:
 		prompt_label.text = "按 E：%s" % nearest_marker.display_name
 
@@ -492,7 +470,7 @@ func _open_collection() -> void:
 		name_label.add_theme_font_size_override("font_size", 19)
 		box.add_child(name_label)
 		var aid_text := " · 逐风辅助" if game.RACE_AIDS.has(item_id) else ""
-		var detail_text := "%s · %s · %d阶%s\n%s" % [game.item_name(item_id), str(game.ITEMS[item_id]["category"]), int(game.ITEMS[item_id]["tier"]), aid_text, game.item_description(item_id)] if known else "继续观察世界、学习知识或尝试新组合"
+		var detail_text := "%s · %s · %d阶%s\n%s" % [game.item_name(item_id), str(game.ITEMS[item_id]["category"]), int(game.ITEMS[item_id]["tier"]), aid_text, game.item_description(item_id)] if known else "继续观察世界线索或尝试新组合"
 		var detail := _make_text(detail_text, Color("bfd6d2") if known else Color("718487"))
 		detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		box.add_child(detail)
@@ -577,193 +555,14 @@ func _progress_style(background: Color, border: Color) -> StyleBoxFlat:
 
 
 func _open_synthesis() -> void:
-	_open_modal("万物合成 · 造化盆")
-	modal_body.add_child(_make_text("永久万物 %d · 配方造物 %d / %d · 新组合只支付实验费，万物本身永远保留。" % [game.discovered_item_ids().size(), game.discovered_recipe_count(), game.RECIPES.size()], Color("ffe7a6")))
-	var experiment_row := HBoxContainer.new()
-	experiment_row.add_theme_constant_override("separation", 10)
-	experiment_row.add_child(_synthesis_library("left"))
-	experiment_row.add_child(_synthesis_center_stage())
-	experiment_row.add_child(_synthesis_library("right"))
-	modal_body.add_child(experiment_row)
-	modal_body.add_child(HSeparator.new())
-	modal_body.add_child(_make_text("最近实验 · 每个不同组合永久记录，左右交换视为同一组", Color("bde9f2")))
-	if game.recent_synthesis_pairs.is_empty():
-		modal_body.add_child(_make_text("还没有实验记录。先从左右图鉴各选一个万物。", Color("8da7a9")))
-	for pair_key in game.recent_synthesis_pairs:
-		var record: Dictionary = game.attempted_pairs.get(pair_key, {})
-		var result_text: String = game.item_name(str(record.get("output", ""))) if bool(record.get("success", false)) else "无稳定结果"
-		modal_body.add_child(_make_text("%s + %s → %s · 首次实验%d金贝" % [
-			game.item_name(str(record.get("left_id", ""))), game.item_name(str(record.get("right_id", ""))),
-			result_text, int(record.get("cost_paid", 0))
-		], Color("9fdcc1") if bool(record.get("success", false)) else Color("c9aaa3")))
+	modal_overlay.visible = false
+	synthesis_table.open()
+	player.controls_enabled = false
 
 
-func _synthesis_library(side: String) -> PanelContainer:
-	var panel := PanelContainer.new()
-	panel.custom_minimum_size.x = 220
-	panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	panel.add_theme_stylebox_override("panel", _panel_style(Color("17343b"), Color("6f9693")))
-	var box := VBoxContainer.new()
-	box.add_theme_constant_override("separation", 6)
-	panel.add_child(box)
-	var side_name := "左侧万物" if side == "left" else "右侧万物"
-	var title := _make_text(side_name, Color("f0d27e"))
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 18)
-	box.add_child(title)
-	box.add_child(_make_text("与另一侧读取同一份永久图鉴", Color("8fb0ae")))
-	var grid := GridContainer.new()
-	grid.columns = 2
-	grid.add_theme_constant_override("h_separation", 5)
-	grid.add_theme_constant_override("v_separation", 5)
-	if side == "left":
-		synthesis_left_library = grid
-	else:
-		synthesis_right_library = grid
-	for item_id in game.discovered_item_ids():
-		var selected: bool = synthesis_left_id == item_id if side == "left" else synthesis_right_id == item_id
-		var card := PanelContainer.new()
-		card.custom_minimum_size = Vector2(90, 116)
-		card.add_theme_stylebox_override("panel", _panel_style(Color("203f45"), Color("efcf73") if selected else Color("52787a")))
-		var card_box := VBoxContainer.new()
-		card_box.alignment = BoxContainer.ALIGNMENT_CENTER
-		card.add_child(card_box)
-		card_box.add_child(_item_art(item_id, 54.0))
-		var choose := _make_button(("✓ " if selected else "") + game.item_name(item_id), _select_synthesis_item.bind(side, item_id))
-		choose.tooltip_text = game.item_description(item_id)
-		card_box.add_child(choose)
-		grid.add_child(card)
-	box.add_child(grid)
-	return panel
-
-
-func _synthesis_center_stage() -> PanelContainer:
-	synthesis_stage = PanelContainer.new()
-	synthesis_stage.custom_minimum_size.x = 260
-	synthesis_stage.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	synthesis_stage.add_theme_stylebox_override("panel", _panel_style(Color("254f49"), Color("d9bd63")))
-	var box := VBoxContainer.new()
-	box.alignment = BoxContainer.ALIGNMENT_CENTER
-	box.add_theme_constant_override("separation", 8)
-	synthesis_stage.add_child(box)
-	var title := _make_text("造化盆", Color("ffe49a"))
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 22)
-	box.add_child(title)
-	var pair := HBoxContainer.new()
-	pair.alignment = BoxContainer.ALIGNMENT_CENTER
-	pair.add_theme_constant_override("separation", 8)
-	pair.add_child(_synthesis_selected_item(synthesis_left_id, "左侧"))
-	var plus := _make_text("＋", Color("f0d27e"))
-	plus.add_theme_font_size_override("font_size", 24)
-	pair.add_child(plus)
-	pair.add_child(_synthesis_selected_item(synthesis_right_id, "右侧"))
-	box.add_child(pair)
-	var ready := not synthesis_left_id.is_empty() and not synthesis_right_id.is_empty()
-	var cost: int = game.synthesis_cost(synthesis_left_id, synthesis_right_id) if ready else 0
-	var prior: Dictionary = game.synthesis_attempt_record(synthesis_left_id, synthesis_right_id) if ready else {}
-	var status_text := "从左右图鉴各选一个万物"
-	if ready and not prior.is_empty():
-		status_text = "这个组合已经记录 · 再次查看 0金贝"
-	elif ready:
-		status_text = "新组合实验费 %d金贝%s" % [cost, " · 已应用半价" if game.synthesis_discount_uses > 0 else ""]
-	var status := _make_text(status_text, Color("9fe0ba") if ready else Color("9bb5bc"))
-	status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	box.add_child(status)
-	box.add_child(_make_text("当前%d金贝 · 折扣剩余%d次" % [game.cash, game.synthesis_discount_uses], Color("d9e8df")))
-	var disabled: bool = not ready or (prior.is_empty() and game.cash < cost)
-	box.add_child(_make_button("查看记录 · 0金贝" if not prior.is_empty() else "开始实验 · %d金贝" % cost, _submit_synthesis, disabled))
-	box.add_child(_make_button("清空两侧", _clear_synthesis, not ready))
-	return synthesis_stage
-
-
-func _synthesis_selected_item(item_id: String, placeholder: String) -> Control:
-	var box := VBoxContainer.new()
-	box.custom_minimum_size.x = 92
-	box.alignment = BoxContainer.ALIGNMENT_CENTER
-	if item_id.is_empty():
-		var empty := ColorRect.new()
-		empty.color = Color("173039")
-		empty.custom_minimum_size = Vector2(78, 78)
-		box.add_child(empty)
-		box.add_child(_make_text(placeholder, Color("82999a")))
-	else:
-		box.add_child(_item_art(item_id, 78.0))
-		var name_label := _make_text(game.item_name(item_id), Color("f3d77f"))
-		name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		box.add_child(name_label)
-	return box
-
-
-func _select_synthesis_item(side: String, item_id: String) -> void:
-	if side == "left":
-		synthesis_left_id = item_id
-	else:
-		synthesis_right_id = item_id
-	_open_synthesis()
-
-
-func _clear_synthesis() -> void:
-	synthesis_left_id = ""
-	synthesis_right_id = ""
-	_open_synthesis()
-
-
-func _submit_synthesis() -> void:
-	var result: Dictionary = game.synthesize_pair(synthesis_left_id, synthesis_right_id)
-	_show_synthesis_result(result)
-
-
-func _show_synthesis_result(result: Dictionary) -> void:
-	if not bool(result.get("ok", false)):
-		_show_result("实验未开始", str(result.get("text", "无法开始实验。")), _open_synthesis)
-		return
-	if not bool(result.get("success", false)):
-		_open_modal("实验记录 · %s" % str(result.get("failure_title", "无稳定结果")))
-		var panel := PanelContainer.new()
-		panel.add_theme_stylebox_override("panel", _panel_style(Color("352d31"), Color("b46f6b")))
-		var box := VBoxContainer.new()
-		panel.add_child(box)
-		var title := _make_text(str(result.get("failure_title", "结构未成")), Color("f0aaa0"))
-		title.add_theme_font_size_override("font_size", 23)
-		box.add_child(title)
-		box.add_child(_make_text("%s + %s" % [game.item_name(str(result.get("left_id", ""))), game.item_name(str(result.get("right_id", "")))], Color("d6c3c0")))
-		box.add_child(_make_text(str(result.get("failure_reason", "两者没有形成稳定万物。")), Color("f1e4d8")))
-		box.add_child(_make_text("研究提示：%s" % str(result.get("suggestion", "替换一侧再试。")), Color("f0cf7e")))
-		box.add_child(_make_text("本次支付%d金贝 · 两个万物永久保留 · 此组合以后免费查看" % int(result.get("cost_paid", 0)), Color("8ee0b1")))
-		modal_body.add_child(panel)
-		var actions := HBoxContainer.new()
-		actions.add_child(_make_button("重新尝试", _open_synthesis))
-		actions.add_child(_make_button("查看万物图鉴", _open_collection))
-		modal_body.add_child(actions)
-		return
-
-	var output_id := str(result["output"])
-	var first_discovery := bool(result.get("first_discovery", false))
-	_open_modal("首次发现！" if first_discovery else "已知发现")
-	var reveal := HBoxContainer.new()
-	reveal.add_theme_constant_override("separation", 18)
-	reveal.add_child(_collection_art(output_id, 230.0, true))
-	var copy := VBoxContainer.new()
-	copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var title := _make_text(game.item_name(output_id), Color("f3d77f"))
-	title.add_theme_font_size_override("font_size", 30)
-	copy.add_child(title)
-	copy.add_child(_make_text("永久加入万物图鉴" if first_discovery else "这个发现已经永久记录", Color("8ee0b1")))
-	copy.add_child(_make_text(game.item_description(output_id), Color("d7e8e4")))
-	copy.add_child(_make_text("%s · %d阶万物 · 本次支付%d金贝" % [str(result.get("category", "造物")), int(result.get("tier", game.ITEMS[output_id]["tier"])), int(result.get("cost_paid", 0))], Color("adc9c7")))
-	copy.add_child(_make_text("收藏进度 %d / %d" % [int(result.get("collection_count", 0)), int(result.get("collection_total", game.RECIPES.size()))], Color("f0cf7e")))
-	copy.add_child(_make_text("新增可尝试组合：%d" % int(result.get("new_opportunities", game.count_untried_visible_pairs())), Color("a9d9d1")))
-	if game.RACE_AIDS.has(output_id):
-		copy.add_child(_make_text("逐风用途：%s · 每场部署费%d金贝" % [str(game.RACE_AIDS[output_id]["description"]), int(game.RACE_AIDS[output_id]["fee"])], Color("9fe0ba")))
-	reveal.add_child(copy)
-	modal_body.add_child(reveal)
-	var actions := HBoxContainer.new()
-	actions.add_child(_make_button("继续合成", _open_synthesis))
-	actions.add_child(_make_button("查看万物图鉴", _open_collection))
-	if game.RACE_AIDS.has(output_id):
-		actions.add_child(_make_button("用于逐风竞速", _open_race))
-	modal_body.add_child(actions)
+func _on_synthesis_table_closed() -> void:
+	player.controls_enabled = true
+	_refresh_hud()
 
 
 func _open_shop() -> void:
@@ -773,18 +572,18 @@ func _open_shop() -> void:
 	var intro_row := HBoxContainer.new()
 	intro_row.add_theme_constant_override("separation", 16)
 	intro.add_child(intro_row)
-	intro_row.add_child(_item_art("paper", 112.0))
+	intro_row.add_child(_item_art("cloud", 112.0))
 	var intro_copy := VBoxContainer.new()
 	intro_copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var welcome := _make_text("阿拓的知识铺", Color("f4dc96"))
 	welcome.add_theme_font_size_override("font_size", 23)
 	intro_copy.add_child(welcome)
-	intro_copy.add_child(_make_text("这里提供一次性永久知识、配方方向线索和实验折扣。每个万物一旦发现，就会永久留在图鉴中。", Color("c9e5df")))
+	intro_copy.add_child(_make_text("这里提供配方方向线索与实验折扣。全部万物都要在造化盆中亲自发现，服务只帮助你理解关系。", Color("c9e5df")))
 	intro_copy.add_child(_make_text("当前%d金贝 · 永久万物%d种 · 实验折扣%d次" % [game.cash, game.discovered_item_ids().size(), game.synthesis_discount_uses], Color("f0d27e")))
 	intro_copy.add_child(_make_text("“我卖的是别人走过的路。学会以后，那条路就归你了。”——阿拓", Color("eab77f")))
 	intro_row.add_child(intro_copy)
 	modal_body.add_child(intro)
-	var purchase_title := _make_text("永久知识与研究服务", Color("ffe7a6"))
+	var purchase_title := _make_text("关系线索与研究服务", Color("ffe7a6"))
 	purchase_title.add_theme_font_size_override("font_size", 20)
 	modal_body.add_child(purchase_title)
 	var purchase_grid := GridContainer.new()
@@ -814,12 +613,12 @@ func _open_shop() -> void:
 		price_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		card_box.add_child(price_label)
 		var disabled: bool = not bool(offer["available"]) or game.cash < int(offer["price"])
-		card_box.add_child(_make_button("学习" if str(offer["type"]) == "knowledge" else "购买服务", _buy_shop_offer.bind(str(offer["id"])), disabled))
+		card_box.add_child(_make_button("购买服务", _buy_shop_offer.bind(str(offer["id"])), disabled))
 		purchase_grid.add_child(card)
 	modal_body.add_child(purchase_grid)
 	if not game.last_shop_hint.is_empty():
 		modal_body.add_child(_make_text("最近线索：%s" % game.last_shop_hint, Color("f0d27e")))
-	modal_body.add_child(_make_text("普通查看和购买不消耗潮刻。永久知识不会因日期或财富变化失效。", Color("9bb5bc")))
+	modal_body.add_child(_make_text("普通查看和购买不消耗潮刻。线索不会直接解锁万物，也不会改变固定配方。", Color("9bb5bc")))
 
 
 func _buy_shop_offer(offer_id: String) -> void:
@@ -891,12 +690,12 @@ func _open_tower() -> void:
 	_open_modal("万象塔")
 	modal_body.add_child(_art_banner(IslandPanorama, 210.0))
 	var count: int = int(game.discovered_recipe_count())
-	modal_body.add_child(_make_text("塔身会回应你真正理解并留下的造物。当前图鉴：%d / %d。" % [count, game.RECIPES.size()], Color("d8f4f8")))
+	modal_body.add_child(_make_text("塔身会回应你真正理解并留下的关系。当前谱系：%d / %d。" % [count, game.RECIPES.size()], Color("d8f4f8")))
 	var floors := [
-		{"need": 1, "name": "潮纹廊", "reward": "记录第一种稳定造物"},
-		{"need": 3, "name": "造物回廊", "reward": "开放组合关系陈列"},
-		{"need": 6, "name": "风贝台", "reward": "开放岛民需求与稀有线索"},
-		{"need": 9, "name": "塔心观象室", "reward": "进入下一阶段的万物研究"}
+		{"need": 3, "name": "潮火基座", "reward": "发现全部二阶万物"},
+		{"need": 9, "name": "云泥回廊", "reward": "发现全部三阶万物"},
+		{"need": 15, "name": "众生工坊", "reward": "发现至少六种四阶万物"},
+		{"need": 18, "name": "四象观台", "reward": "完成四阶万物谱系"}
 	]
 	for raw_floor in floors:
 		var floor: Dictionary = raw_floor

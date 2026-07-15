@@ -5,56 +5,61 @@ signal changed
 signal notice(text: String)
 
 const ITEMS := {
-	"water": {"name": "水", "tier": 0, "category": "自然", "description": "岛上最常见的流动，也是一切变化的起点。"},
-	"earth": {"name": "土", "tier": 0, "category": "自然", "description": "能够承接形状、种子与重量的基础万物。"},
-	"fire": {"name": "火", "tier": 0, "category": "自然", "description": "让万物改变形态并留下新性质的热。"},
-	"wood": {"name": "木", "tier": 0, "category": "自然", "description": "有纹理、韧性和生长痕迹的岛木。"},
-	"wind": {"name": "风", "tier": 0, "category": "自然", "description": "看不见，却会在海面、风帆和铃声中留下方向。"},
-	"stone": {"name": "石", "tier": 0, "category": "自然", "description": "稳定、沉默，记录着岛屿长久的形状。"},
-	"fish": {"name": "鱼", "tier": 0, "category": "生灵", "description": "随潮水靠近浅滩的海中生灵。"},
-	"fruit": {"name": "果实", "tier": 0, "category": "生灵", "description": "植物把阳光和季节保存下来的甜味。"},
-	"salt": {"name": "盐", "tier": 0, "category": "生活", "description": "海水退去后留下的晶体，能够改变保存方式。"},
-	"metal": {"name": "金", "tier": 0, "category": "工艺", "description": "可被锻打、传声并形成精密边缘的金属。"},
-	"cloth": {"name": "布", "tier": 0, "category": "生活", "description": "由纤维交织而成，柔软却能承接风力。"},
-	"paper": {"name": "纸", "tier": 0, "category": "生活", "description": "可以保存符号、地图与人物记忆的薄片。"},
-	"flower": {"name": "花", "tier": 0, "category": "生灵", "description": "短暂盛开，却能留下气味和颜色。"},
-	"mud": {"name": "泥", "tier": 1, "category": "工艺", "description": "水与土安静结合后的第一种稳定造物。"},
-	"charcoal": {"name": "炭", "tier": 1, "category": "工艺", "description": "木在火中留下的凝练热量。"},
-	"fog": {"name": "雾", "tier": 1, "category": "自然", "description": "被风托住、暂时不肯落下的水。"},
-	"pottery": {"name": "陶器", "tier": 2, "category": "生活", "description": "泥经历火之后获得了可以长久保存的形状。"},
-	"tool": {"name": "工具", "tier": 2, "category": "工艺", "description": "木提供握持，金提供改变与测量世界的锋面。"},
-	"sail": {"name": "风帆", "tier": 2, "category": "工艺", "description": "布接住风，第一次把方向变成力量。"},
-	"salted_fish": {"name": "咸鱼", "tier": 2, "category": "生活", "description": "海获与盐共同形成的保存方法。"},
-	"calm_incense": {"name": "静心香", "tier": 3, "category": "灵感", "description": "炭托起花香，让纷乱慢慢沉静。"},
-	"wind_bell": {"name": "观风铃", "tier": 3, "category": "灵感", "description": "金属替无形的风留下了可以比较的声音。"}
+	"water": {"name": "水", "tier": 1, "category": "根源", "description": "流动、冷却、滋养与侵蚀的起点。", "art_source": "material", "art_index": 0},
+	"fire": {"name": "火", "tier": 1, "category": "根源", "description": "加热、转化、烧制与释放力量的起点。", "art_source": "material", "art_index": 2},
+	"earth": {"name": "土", "tier": 1, "category": "根源", "description": "承载、混合、堆积与孕育的起点。", "art_source": "material", "art_index": 1},
+	"steam": {"name": "蒸汽", "tier": 2, "category": "天象", "description": "水受热后获得上升与膨胀的形态。", "art_source": "creation", "art_index": 2},
+	"mud": {"name": "泥", "tier": 2, "category": "地貌", "description": "水进入土后形成可流动、可塑形的介质。", "art_source": "creation", "art_index": 0},
+	"lava": {"name": "熔岩", "tier": 2, "category": "地貌", "description": "土石受极热后形成的高温流体。", "art_source": "creation", "art_index": 1},
+	"cloud": {"name": "云", "tier": 3, "category": "天象", "description": "蒸汽聚集并重新携带水分。", "art_source": "material", "art_index": 4},
+	"energy": {"name": "动力", "tier": 3, "category": "原理", "description": "蒸汽在持续热量中表现出的压力与做功能力。", "art_source": "material", "art_index": 9},
+	"swamp": {"name": "沼泽", "tier": 3, "category": "生境", "description": "水分长期停留在泥地形成的湿润环境。", "art_source": "material", "art_index": 12},
+	"pottery": {"name": "陶器", "tier": 3, "category": "工艺", "description": "泥经火烧获得固定而耐久的形状。", "art_source": "creation", "art_index": 3},
+	"obsidian": {"name": "黑曜石", "tier": 3, "category": "地质", "description": "熔岩被水快速冷却形成的锋利火山玻璃。", "art_source": "material", "art_index": 5},
+	"mountain": {"name": "山岳", "tier": 3, "category": "地貌", "description": "熔岩与大地长期堆积、抬升形成的高地。", "art_source": "material", "art_index": 5},
+	"rain": {"name": "雨", "tier": 4, "category": "天象", "description": "云在山岳抬升与降温中释放水分。", "art_source": "material", "art_index": 0},
+	"thunderstorm": {"name": "雷暴", "tier": 4, "category": "天象", "description": "云层中的动力累积为剧烈天气。", "art_source": "material", "art_index": 2},
+	"life": {"name": "生命", "tier": 4, "category": "生灵", "description": "湿润生境在持续变化中产生自我延续。", "art_source": "material", "art_index": 12},
+	"fertile_soil": {"name": "沃土", "tier": 4, "category": "生境", "description": "沼泽沉积物与大地结合形成肥沃土壤。", "art_source": "material", "art_index": 1},
+	"water_jar": {"name": "水罐", "tier": 4, "category": "生活", "description": "陶器获得盛水与运输的明确用途。", "art_source": "creation", "art_index": 3},
+	"kiln": {"name": "窑炉", "tier": 4, "category": "工艺", "description": "陶器与火共同形成可持续烧制的设施。", "art_source": "creation", "art_index": 7},
+	"stone_blade": {"name": "石刃", "tier": 4, "category": "工艺", "description": "山石敲击黑曜石形成可控制的锋面。", "art_source": "creation", "art_index": 4},
+	"ore_vein": {"name": "矿脉", "tier": 4, "category": "地质", "description": "山岳内部的热活动使矿物聚集成带。", "art_source": "material", "art_index": 9},
+	"river": {"name": "河流", "tier": 4, "category": "地貌", "description": "水沿山势持续汇集并刻出稳定通路。", "art_source": "material", "art_index": 4}
 }
 
 const RECIPES := [
-	{"inputs": ["water", "earth"], "output": "mud"},
-	{"inputs": ["fire", "wood"], "output": "charcoal"},
-	{"inputs": ["wind", "water"], "output": "fog"},
-	{"inputs": ["mud", "fire"], "output": "pottery"},
-	{"inputs": ["wood", "metal"], "output": "tool"},
-	{"inputs": ["cloth", "wind"], "output": "sail"},
-	{"inputs": ["fish", "salt"], "output": "salted_fish"},
-	{"inputs": ["charcoal", "flower"], "output": "calm_incense"},
-	{"inputs": ["metal", "wind"], "output": "wind_bell"}
+	{"inputs": ["water", "fire"], "output": "steam", "relation": "相变", "logic": "水受热后成为上升的气态水。"},
+	{"inputs": ["water", "earth"], "output": "mud", "relation": "混合", "logic": "水进入土，使土变得湿润并可塑。"},
+	{"inputs": ["fire", "earth"], "output": "lava", "relation": "相变", "logic": "大地在极热中熔化并流动。"},
+	{"inputs": ["steam", "water"], "output": "cloud", "relation": "聚集", "logic": "更多水分让蒸汽聚集成可见云层。"},
+	{"inputs": ["steam", "fire"], "output": "energy", "relation": "催化", "logic": "持续加热使蒸汽产生压力与做功能力。"},
+	{"inputs": ["mud", "water"], "output": "swamp", "relation": "生境", "logic": "水长期停留在泥地形成湿地。"},
+	{"inputs": ["mud", "fire"], "output": "pottery", "relation": "塑形", "logic": "可塑的泥经烧制固定形状。"},
+	{"inputs": ["lava", "water"], "output": "obsidian", "relation": "冷却", "logic": "熔岩急冷形成玻璃质岩石。"},
+	{"inputs": ["lava", "earth"], "output": "mountain", "relation": "地貌", "logic": "熔岩在大地上堆积、凝固并抬升地形。"},
+	{"inputs": ["cloud", "mountain"], "output": "rain", "relation": "天象", "logic": "山岳迫使云层抬升降温，水分落下。"},
+	{"inputs": ["cloud", "energy"], "output": "thunderstorm", "relation": "天象", "logic": "云层中的运动与电势累积为剧烈天气。"},
+	{"inputs": ["swamp", "energy"], "output": "life", "relation": "催化", "logic": "湿润环境在持续能量中产生自我延续结构。"},
+	{"inputs": ["swamp", "earth"], "output": "fertile_soil", "relation": "沉积", "logic": "湿地残留物与土壤结合，形成富含养分的土地。"},
+	{"inputs": ["pottery", "water"], "output": "water_jar", "relation": "容纳", "logic": "固定器形因为盛水而获得明确用途。"},
+	{"inputs": ["pottery", "fire"], "output": "kiln", "relation": "工艺", "logic": "耐火器壁围住热量，形成持续烧制空间。"},
+	{"inputs": ["obsidian", "mountain"], "output": "stone_blade", "relation": "塑形", "logic": "坚硬山石敲击黑曜石，剥落出锋利刃缘。"},
+	{"inputs": ["mountain", "fire"], "output": "ore_vein", "relation": "地质", "logic": "山体内部热活动搬运并集中矿物。"},
+	{"inputs": ["mountain", "water"], "output": "river", "relation": "地貌", "logic": "水沿高差汇集，长期侵蚀出固定通道。"}
 ]
 
-const INITIAL_DISCOVERIES := ["water", "earth", "fire", "wind", "wood", "stone"]
+const INITIAL_DISCOVERIES := ["water", "fire", "earth"]
 const SYNTHESIS_COST_BY_TIER := [2, 5, 12, 30]
 const SHOP_OFFERS := [
-	{"id": "metal_knowledge", "name": "金工拓片", "type": "knowledge", "price": 35, "art": "metal", "unlock": "metal", "description": "永久发现“金”，开启工具与观风铃的研究关系。"},
-	{"id": "cloth_knowledge", "name": "织造样本", "type": "knowledge", "price": 30, "art": "cloth", "unlock": "cloth", "description": "永久发现“布”，开启风帆的研究关系。"},
-	{"id": "paper_knowledge", "name": "抄纸手记", "type": "knowledge", "price": 25, "art": "paper", "unlock": "paper", "description": "永久发现“纸”，为地图与记录类造物打开入口。"},
-	{"id": "recipe_hint", "name": "配方方向线索", "type": "hint", "price": 12, "art": "paper", "description": "指出一个已知万物可能回应的类别，不公开结果。"},
-	{"id": "experiment_discount", "name": "三次实验折扣", "type": "discount", "price": 24, "art": "charcoal", "uses": 3, "cap": 6, "description": "接下来三次新组合实验费减半，向上取整。"}
+	{"id": "recipe_hint", "name": "配方方向线索", "type": "hint", "price": 12, "art": "cloud", "description": "公开一个已知万物、目标阶层和关系语法，不直接揭晓答案。"},
+	{"id": "experiment_discount", "name": "三次实验折扣", "type": "discount", "price": 24, "art": "energy", "uses": 3, "cap": 6, "description": "接下来三次新组合实验费减半，向上取整。"}
 ]
 const RACE_AIDS := {
-	"tool": {"name": "分段量具", "fee": 4, "description": "测出所选逐风兽四阶段基础表现与场内排名。"},
-	"sail": {"name": "风帆读势", "fee": 5, "description": "分析所选逐风兽在当前天气中的修正与适应排名。"},
-	"calm_incense": {"name": "静心观测", "fee": 6, "description": "显示所选逐风兽的波动等级、标准差与稳定排名。"},
-	"wind_bell": {"name": "全场观风", "fee": 8, "description": "指出当前天气中受益最高的三匹逐风兽。"}
+	"rain": {"name": "雨势推演", "fee": 4, "description": "比较当前天气对所选逐风兽的修正与全场适应排名。"},
+	"thunderstorm": {"name": "雷暴听兆", "fee": 5, "description": "显示所选逐风兽的赛中波动与全场波动排名。"},
+	"water_jar": {"name": "补水观察", "fee": 6, "description": "比较所选逐风兽的耐力、稳定与巡航能力。"},
+	"river": {"name": "河势比照", "fee": 8, "description": "比较所选逐风兽在地形段的基础表现与场内排名。"}
 }
 
 const RACE_BEASTS := [
@@ -117,8 +122,7 @@ var day: int = 1
 var tide: int = 1
 var weather: String = "晴"
 var discovered := {
-	"water": true, "earth": true, "fire": true,
-	"wind": true, "wood": true, "stone": true
+	"water": true, "fire": true, "earth": true
 }
 var attempted_pairs := {}
 var recent_synthesis_pairs: Array[String] = []
@@ -367,6 +371,48 @@ func item_description(item_id: String) -> String:
 	return str(ITEMS[item_id].get("description", ""))
 
 
+func item_tier(item_id: String) -> int:
+	return int(ITEMS.get(item_id, {}).get("tier", 0))
+
+
+func item_art_source(item_id: String) -> String:
+	return str(ITEMS.get(item_id, {}).get("art_source", "material"))
+
+
+func item_art_index(item_id: String) -> int:
+	return int(ITEMS.get(item_id, {}).get("art_index", 0))
+
+
+func tier_discovery_progress(tier: int) -> Dictionary:
+	var total := 0
+	var found := 0
+	for raw_id in ITEMS.keys():
+		var item_id := str(raw_id)
+		if item_tier(item_id) != tier:
+			continue
+		total += 1
+		if is_discovered(item_id):
+			found += 1
+	return {"tier": tier, "found": found, "total": total, "complete": total > 0 and found == total}
+
+
+func available_relation_count(item_id: String) -> int:
+	if not is_discovered(item_id):
+		return 0
+	var count := 0
+	for raw_recipe in RECIPES:
+		var recipe: Dictionary = raw_recipe
+		if is_discovered(str(recipe["output"])):
+			continue
+		var inputs: Array = recipe["inputs"]
+		if not inputs.has(item_id):
+			continue
+		var other_id := str(inputs[1]) if str(inputs[0]) == item_id else str(inputs[0])
+		if is_discovered(other_id) and synthesis_attempt_record(item_id, other_id).is_empty():
+			count += 1
+	return count
+
+
 func synthesis_pair_key(left_id: String, right_id: String) -> String:
 	var ids := [left_id, right_id]
 	ids.sort()
@@ -381,7 +427,7 @@ func synthesis_base_cost(left_id: String, right_id: String) -> int:
 	if not ITEMS.has(left_id) or not ITEMS.has(right_id):
 		return 0
 	var tier := maxi(int(ITEMS[left_id].get("tier", 0)), int(ITEMS[right_id].get("tier", 0)))
-	return int(SYNTHESIS_COST_BY_TIER[clampi(tier, 0, SYNTHESIS_COST_BY_TIER.size() - 1)])
+	return int(SYNTHESIS_COST_BY_TIER[clampi(tier - 1, 0, SYNTHESIS_COST_BY_TIER.size() - 1)])
 
 
 func synthesis_cost(left_id: String, right_id: String) -> int:
@@ -450,6 +496,8 @@ func synthesize_pair(left_id: String, right_id: String) -> Dictionary:
 		record["first_discovery"] = discover_item(output_id, "synthesis")
 		record["category"] = str(ITEMS[output_id]["category"])
 		record["tier"] = int(ITEMS[output_id]["tier"])
+		record["relation"] = str(matched.get("relation", "关系"))
+		record["logic"] = str(matched.get("logic", ""))
 		record["collection_count"] = discovered_recipe_count()
 		record["collection_total"] = RECIPES.size()
 		record["new_opportunities"] = count_untried_visible_pairs()
@@ -514,12 +562,14 @@ func _find_pair_recipe(left_id: String, right_id: String) -> Dictionary:
 
 
 func count_untried_visible_pairs() -> int:
-	var ids := discovered_item_ids()
 	var count := 0
-	for left_index in range(ids.size()):
-		for right_index in range(left_index, ids.size()):
-			if synthesis_attempt_record(ids[left_index], ids[right_index]).is_empty():
-				count += 1
+	for raw_recipe in RECIPES:
+		var recipe: Dictionary = raw_recipe
+		var inputs: Array = recipe["inputs"]
+		var left_id := str(inputs[0])
+		var right_id := str(inputs[1])
+		if is_discovered(left_id) and is_discovered(right_id) and synthesis_attempt_record(left_id, right_id).is_empty():
+			count += 1
 	return count
 
 
@@ -537,10 +587,7 @@ func shop_offers() -> Array:
 		var offer_type := str(offer["type"])
 		var available := true
 		var state_text := "可购买"
-		if offer_type == "knowledge" and is_discovered(str(offer["unlock"])):
-			available = false
-			state_text = "已经掌握"
-		elif offer_type == "discount" and synthesis_discount_uses + int(offer["uses"]) > int(offer["cap"]):
+		if offer_type == "discount" and synthesis_discount_uses + int(offer["uses"]) > int(offer["cap"]):
 			available = false
 			state_text = "需要留出%d次凭证空间" % int(offer["uses"])
 		elif offer_type == "hint" and _next_synthesis_hint().is_empty():
@@ -567,12 +614,7 @@ func buy_shop_offer(offer_id: String) -> Dictionary:
 	var offer_type := str(offer["type"])
 	var delivery := ""
 	var delivery_key := ""
-	if offer_type == "knowledge":
-		var unlock_id := str(offer["unlock"])
-		if is_discovered(unlock_id):
-			return {"ok": false, "text": "你已经掌握%s。" % item_name(unlock_id)}
-		delivery = "永久发现%s" % item_name(unlock_id)
-	elif offer_type == "discount":
+	if offer_type == "discount":
 		if synthesis_discount_uses + int(offer["uses"]) > int(offer["cap"]):
 			return {"ok": false, "text": "这项服务一次交付%d次折扣，账户最多储存%d次。" % [int(offer["uses"]), int(offer["cap"])]}
 		delivery = "增加%d次实验折扣" % int(offer["uses"])
@@ -589,9 +631,7 @@ func buy_shop_offer(offer_id: String) -> Dictionary:
 	if cash < price:
 		return {"ok": false, "text": "购买%s需要%d金贝。" % [str(offer["name"]), price]}
 	cash -= price
-	if offer_type == "knowledge":
-		discover_item(str(offer["unlock"]), "shop")
-	elif offer_type == "discount":
+	if offer_type == "discount":
 		synthesis_discount_uses += int(offer["uses"])
 	elif offer_type == "hint":
 		last_shop_hint = delivery
@@ -626,12 +666,12 @@ func _next_synthesis_hint_record() -> Dictionary:
 		if is_discovered(left_id):
 			return {
 				"pair_key": pair_key,
-				"text": "阿拓的线索：%s似乎会回应一种%s类万物" % [item_name(left_id), str(ITEMS[right_id]["category"])]
+				"text": "阿拓的线索：%s还有一条%s关系，对方是%d阶%s类万物" % [item_name(left_id), str(recipe.get("relation", "稳定")), item_tier(right_id), str(ITEMS[right_id]["category"])]
 			}
 		if is_discovered(right_id):
 			return {
 				"pair_key": pair_key,
-				"text": "阿拓的线索：%s似乎会回应一种%s类万物" % [item_name(right_id), str(ITEMS[left_id]["category"])]
+				"text": "阿拓的线索：%s还有一条%s关系，对方是%d阶%s类万物" % [item_name(right_id), str(recipe.get("relation", "稳定")), item_tier(left_id), str(ITEMS[left_id]["category"])]
 			}
 	return {}
 
@@ -644,21 +684,18 @@ func fish_once() -> Dictionary:
 			"text": "今天这片浅滩已经被翻找干净。潮水明早会带来新的鱼获与漂流物。"
 		}
 	fishing_attempts_today += 1
-	var catches := ["fish", "salt", "water", "flower", "fruit"]
-	var item_id := str(catches[rng.randi_range(0, catches.size() - 1)])
 	var coins := rng.randi_range(40, 80)
-	var first_discovery := discover_item(item_id, "shore")
+	var observations := ["银鳞鱼群", "潮池贝影", "漂木纹路", "盐沫结晶", "海草流向"]
+	var observation := str(observations[rng.randi_range(0, observations.size() - 1)])
 	cash += coins
 	advance_time(1)
 	_record_wealth("浅滩采集")
-	var observation := "首次观察%s，永久加入万物图鉴" % item_name(item_id) if first_discovery else "再次观察到%s" % item_name(item_id)
 	return {
 		"ok": true,
-		"item": item_id,
-		"first_discovery": first_discovery,
+		"observation": observation,
 		"coins": coins,
 		"remaining": fishing_remaining_today(),
-		"text": "%s，并赚到%d金贝。今日浅滩还可观察%d次。" % [observation, coins, fishing_remaining_today()]
+		"text": "你记录了%s，并把可用鱼获换成%d金贝。今日浅滩还可采集%d次。" % [observation, coins, fishing_remaining_today()]
 	}
 
 
@@ -671,18 +708,18 @@ func activate_aqiu_request() -> void:
 
 func turn_in_aqiu_request() -> Dictionary:
 	if aqiu_request_done:
-		return {"ok": false, "text": "阿葵已经记下你发现的咸鱼保存方法。"}
-	if not is_discovered("salted_fish"):
+		return {"ok": false, "text": "阿葵已经记下你发现的水罐补水方法。"}
+	if not is_discovered("water_jar"):
 		activate_aqiu_request()
-		return {"ok": false, "text": "阿葵想了解一种海获保存方法。试试让鱼和盐在造化盆中相遇。"}
+		return {"ok": false, "text": "阿葵想为逐风兽准备稳定的补水器具。陶器已经能固定形状，再想想什么能赋予它用途。"}
 	aqiu_request_done = true
 	aqiu_request_active = false
 	cash += 80
 	_record_wealth("完成阿葵委托")
 	relationships["aqiu"] = int(relationships.get("aqiu", 0)) + 8
-	add_memory("aqiu", "你把咸鱼的保存方法告诉了阿葵。")
+	add_memory("aqiu", "你把水罐的补水方法告诉了阿葵。")
 	changed.emit()
-	return {"ok": true, "text": "阿葵记下咸鱼的保存方法，支付80金贝，并告诉你云鳍今天状态不错。咸鱼仍永久保留在图鉴中。"}
+	return {"ok": true, "text": "阿葵记下水罐的补水方法，支付80金贝，并告诉你云鳍今天状态不错。水罐仍永久保留在图鉴中。"}
 
 
 func add_memory(npc_id: String, text: String) -> void:
@@ -725,38 +762,33 @@ func race_aid_info(aid_id: String, beast_index: int) -> Dictionary:
 	var beast: Dictionary = RACE_BEASTS[beast_index]
 	var insight := ""
 	match aid_id:
-		"tool":
-			var bases := _race_stage_bases(beast)
-			var stage_names := ["起步", "巡航", "地形", "冲刺"]
-			var parts: Array[String] = []
-			for stage in range(4):
-				var values: Array[float] = []
-				for raw_beast in RACE_BEASTS:
-					values.append(float(_race_stage_bases(raw_beast)[stage]))
-				parts.append("%s %.1f（第%d）" % [stage_names[stage], float(bases[stage]), _descending_rank(float(bases[stage]), values)])
-			insight = "%s：%s。" % [str(beast["name"]), " / ".join(parts)]
-		"sail":
+		"rain":
 			var modifier := _race_weather_modifier(beast)
 			var modifiers: Array[float] = []
 			for raw_beast in RACE_BEASTS:
 				modifiers.append(_race_weather_modifier(raw_beast))
 			insight = "%s在%s中的阶段修正为%+.2f，天气适应列第%d。" % [str(beast["name"]), weather, modifier, _descending_rank(modifier, modifiers)]
-		"calm_incense":
+		"thunderstorm":
 			var sigma := 12.0 - float(beast["stability"]) * 0.08
-			var stabilities: Array[float] = []
+			var sigmas: Array[float] = []
 			for raw_beast in RACE_BEASTS:
-				stabilities.append(float(raw_beast["stability"]))
+				sigmas.append(12.0 - float(raw_beast["stability"]) * 0.08)
 			var level := "低波动" if sigma <= 6.0 else ("中波动" if sigma <= 7.0 else "高波动")
-			insight = "%s为%s，阶段标准差 %.2f，稳定性列第%d。" % [str(beast["name"]), level, sigma, _descending_rank(float(beast["stability"]), stabilities)]
-		"wind_bell":
-			var field: Array = []
+			insight = "%s为%s，阶段标准差 %.2f，波动程度列第%d。" % [str(beast["name"]), level, sigma, _descending_rank(sigma, sigmas)]
+		"water_jar":
+			var stamina_values: Array[float] = []
+			var stability_values: Array[float] = []
 			for raw_beast in RACE_BEASTS:
-				field.append({"name": str(raw_beast["name"]), "modifier": _race_weather_modifier(raw_beast)})
-			field.sort_custom(func(a, b): return float(a["modifier"]) > float(b["modifier"]))
-			var leaders: Array[String] = []
-			for index in range(3):
-				leaders.append("%s %+.2f" % [str(field[index]["name"]), float(field[index]["modifier"])])
-			insight = "%s天气受益前三：%s。" % [weather, " / ".join(leaders)]
+				stamina_values.append(float(raw_beast["stamina"]))
+				stability_values.append(float(raw_beast["stability"]))
+			var cruise := float(_race_stage_bases(beast)[1])
+			insight = "%s耐力第%d、稳定第%d，巡航基础 %.1f。" % [str(beast["name"]), _descending_rank(float(beast["stamina"]), stamina_values), _descending_rank(float(beast["stability"]), stability_values), cruise]
+		"river":
+			var terrain_values: Array[float] = []
+			for raw_beast in RACE_BEASTS:
+				terrain_values.append(float(_race_stage_bases(raw_beast)[2]))
+			var terrain := float(_race_stage_bases(beast)[2])
+			insight = "%s地形段基础 %.1f，场内列第%d；赛道适性为%d。" % [str(beast["name"]), terrain, _descending_rank(terrain, terrain_values), int(beast["course"])]
 	return {
 		"ok": true,
 		"id": aid_id,

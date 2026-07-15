@@ -9,112 +9,128 @@ func _init() -> void:
 
 
 func _run() -> void:
-	_test_permanent_pair_discovery()
-	_test_invalid_and_same_item_pairs()
-	_test_cost_and_discount_contract()
-	_test_knowledge_shop()
-	_test_request_uses_discovery_without_consumption()
-	_test_race_aids_are_information_only()
-	await _test_discovery_ui_contract()
-	print("DISCOVERY SYSTEM TEST PASS: permanent pairs, services, race aids and mirrored UI")
+	_test_four_tier_recipe_graph()
+	_test_permanent_pair_costs_and_failures()
+	_test_shop_only_supports_research()
+	_test_request_uses_water_jar_without_consumption()
+	_test_race_insights_are_information_only()
+	await _test_full_screen_synthesis_ui()
+	print("DISCOVERY SYSTEM TEST PASS: four tiers, full-screen basin, services and race insights")
 	quit(0)
 
 
-func _test_permanent_pair_discovery() -> void:
+func _test_four_tier_recipe_graph() -> void:
 	var state = GameStateScript.new()
-	var initial_ids := state.discovered_item_ids()
-	assert(initial_ids.size() == 6 and initial_ids.has("water") and initial_ids.has("wood"), "开局必须永久掌握六种基础万物")
+	var initial_ids: Array[String] = state.discovered_item_ids()
+	assert(initial_ids.size() == 3 and initial_ids.has("water") and initial_ids.has("fire") and initial_ids.has("earth"), "开局图鉴必须严格只有水、火、土")
+	assert(state.ITEMS.size() == 21 and state.RECIPES.size() == 18, "四阶原型必须固定为21个万物和18条配方")
+
+	var pair_keys := {}
+	var outputs := {}
+	for raw_recipe in state.RECIPES:
+		var recipe: Dictionary = raw_recipe
+		var inputs: Array = recipe["inputs"]
+		var pair_key: String = state.synthesis_pair_key(str(inputs[0]), str(inputs[1]))
+		var output_id := str(recipe["output"])
+		assert(not pair_keys.has(pair_key), "每个无序输入组合只能存在一条配方")
+		assert(not outputs.has(output_id), "四阶原型中每个结果必须只有一个固定来源")
+		assert(not str(recipe.get("relation", "")).is_empty() and not str(recipe.get("logic", "")).is_empty(), "每条配方必须固定关系类型与内在逻辑")
+		pair_keys[pair_key] = true
+		outputs[output_id] = true
+
+	for tier in range(1, 4):
+		for raw_id in state.ITEMS.keys():
+			var item_id := str(raw_id)
+			if state.item_tier(item_id) != tier:
+				continue
+			var used_next := false
+			for raw_recipe in state.RECIPES:
+				var recipe: Dictionary = raw_recipe
+				if state.item_tier(str(recipe["output"])) == tier + 1 and recipe["inputs"].has(item_id):
+					used_next = true
+					break
+			assert(used_next, "%d阶万物%s必须参与下一阶关系" % [tier, state.item_name(item_id)])
+
+	state.cash = 2000
+	var first_layer_pairs := [["water", "fire", "steam"], ["water", "earth", "mud"], ["fire", "earth", "lava"]]
+	for pair in first_layer_pairs:
+		var result: Dictionary = state.synthesize_pair(str(pair[0]), str(pair[1]))
+		assert(bool(result.get("success", false)) and str(result.get("output", "")) == str(pair[2]), "三个根万物的每一组不同配对都必须成功")
+	assert(int(state.tier_discovery_progress(2)["found"]) == 3, "完成三个根关系后必须点亮全部二阶万物")
+
+	for raw_recipe in state.RECIPES:
+		var recipe: Dictionary = raw_recipe
+		var output_id := str(recipe["output"])
+		if state.is_discovered(output_id):
+			continue
+		var inputs: Array = recipe["inputs"]
+		assert(state.is_discovered(str(inputs[0])) and state.is_discovered(str(inputs[1])), "按阶推进时配方输入必须已经发现")
+		var result: Dictionary = state.synthesize_pair(str(inputs[0]), str(inputs[1]))
+		assert(bool(result.get("success", false)) and state.is_discovered(output_id), "完整谱系必须能够按固定关系推进")
+	assert(state.discovered_item_ids().size() == 21 and state.discovered_recipe_count() == 18, "走完18条关系后必须完成21个万物的四阶图鉴")
+
+
+func _test_permanent_pair_costs_and_failures() -> void:
+	var state = GameStateScript.new()
 	var cash_before := int(state.cash)
-	var result: Dictionary = state.synthesize_pair("water", "earth")
-	assert(bool(result.get("success", false)) and str(result.get("output", "")) == "mud", "水与土必须发现泥")
-	assert(state.cash == cash_before - 2, "两个0阶万物的首次实验必须支付2金贝")
-	assert(state.is_discovered("water") and state.is_discovered("earth") and state.is_discovered("mud"), "合成双方与结果都必须永久保留")
+	var steam: Dictionary = state.synthesize_pair("water", "fire")
+	assert(bool(steam.get("success", false)) and int(steam.get("cost_paid", 0)) == 2, "一阶输入首次实验必须支付2金贝")
+	assert(state.is_discovered("water") and state.is_discovered("fire") and state.is_discovered("steam"), "输入和结果必须永久保留")
 	var discovered_after := state.discovered_item_ids().size()
-	var cash_after := int(state.cash)
-	var reversed: Dictionary = state.synthesize_pair("earth", "water")
-	assert(bool(reversed.get("repeat", false)) and int(reversed.get("cost_paid", -1)) == 0, "左右交换必须命中同一历史组合并免费查看")
-	assert(state.cash == cash_after and state.discovered_item_ids().size() == discovered_after, "历史组合不得重复扣款或重复发现")
-	var chained: Dictionary = state.synthesize_pair("mud", "fire")
-	assert(bool(chained.get("success", false)) and state.is_discovered("pottery"), "新发现必须立即能够参与下一层组合")
-	assert(int(chained.get("cost_paid", 0)) == 5, "包含1阶万物的首次实验必须支付5金贝")
+	var repeated: Dictionary = state.synthesize_pair("fire", "water")
+	assert(bool(repeated.get("repeat", false)) and int(repeated.get("cost_paid", -1)) == 0, "左右交换必须命中同一历史组合并免费复查")
+	assert(state.cash == cash_before - 2 and state.discovered_item_ids().size() == discovered_after, "复查不得重复扣款或重复发现")
 
+	var invalid_cash := int(state.cash)
+	var same: Dictionary = state.synthesize_pair("earth", "earth")
+	assert(bool(same.get("ok", false)) and not bool(same.get("success", true)), "同物组合允许提交并形成明确失败记录")
+	assert(str(same.get("failure_title", "")).contains("同源") and state.cash == invalid_cash - 2, "同物失败必须提供专门反馈并按首次尝试收费")
+	var failed_cash := int(state.cash)
+	var same_repeat: Dictionary = state.synthesize_pair("earth", "earth")
+	assert(bool(same_repeat.get("repeat", false)) and state.cash == failed_cash, "失败关系也必须永久免费复查")
 
-func _test_invalid_and_same_item_pairs() -> void:
-	var state = GameStateScript.new()
-	var invalid: Dictionary = state.synthesize_pair("water", "wood")
-	assert(bool(invalid.get("ok", false)) and not bool(invalid.get("success", true)), "无配方的二元组合必须形成明确失败记录")
-	assert(not str(invalid.get("failure_reason", "")).is_empty() and not str(invalid.get("suggestion", "")).is_empty(), "失败必须说明关系并给出方向提示")
-	assert(state.is_discovered("water") and state.is_discovered("wood"), "失败不得移除任何万物")
-	var cash_after := int(state.cash)
-	var repeat: Dictionary = state.synthesize_pair("wood", "water")
-	assert(bool(repeat.get("repeat", false)) and state.cash == cash_after, "无效组合左右交换后也必须免费显示历史")
-	var same: Dictionary = state.synthesize_pair("stone", "stone")
-	assert(bool(same.get("ok", false)) and not bool(same.get("success", true)), "左右两侧必须允许选择同一个万物")
-	assert(str(same.get("failure_title", "")).contains("同源"), "同物无效组合必须提供专门反馈")
-	var rejected: Dictionary = state.synthesize(["water", "earth", "fire"])
-	assert(not bool(rejected.get("ok", true)), "造化盆必须严格只接受两个输入")
-
-
-func _test_cost_and_discount_contract() -> void:
 	var poor = GameStateScript.new()
 	poor.cash = 1
 	var blocked: Dictionary = poor.synthesize_pair("water", "earth")
-	assert(not bool(blocked.get("ok", true)) and poor.attempted_pairs.is_empty(), "金贝不足时不得扣款或建立尝试记录")
+	assert(not bool(blocked.get("ok", true)) and poor.attempted_pairs.is_empty(), "金贝不足时不得扣款或建立关系记录")
 
+	var discount_state = GameStateScript.new()
+	assert(bool(discount_state.buy_shop_offer("experiment_discount").get("ok", false)), "研究商店必须能交付三次实验折扣")
+	var discounted: Dictionary = discount_state.synthesize_pair("water", "fire")
+	assert(int(discounted.get("cost_paid", 0)) == 1 and discount_state.synthesis_discount_uses == 2, "2金贝实验半价后必须向上取整为1并消耗一次折扣")
+
+
+func _test_shop_only_supports_research() -> void:
 	var state = GameStateScript.new()
-	var bought: Dictionary = state.buy_shop_offer("experiment_discount")
-	assert(bool(bought.get("ok", false)) and state.synthesis_discount_uses == 3, "折扣服务必须一次增加三次")
-	var cash_before := int(state.cash)
-	var discounted: Dictionary = state.synthesize_pair("water", "stone")
-	assert(int(discounted.get("cost_paid", 0)) == 1 and state.cash == cash_before - 1, "2金贝实验应用半价后必须向上取整为1金贝")
-	assert(state.synthesis_discount_uses == 2, "只有真正的新组合实验才消耗一次折扣")
-	state.synthesize_pair("stone", "water")
-	assert(state.synthesis_discount_uses == 2, "查看历史组合不得消耗折扣")
-	state.synthesis_discount_uses = 4
-	var cash_with_partial_space := int(state.cash)
-	assert(not bool(state.buy_shop_offer("experiment_discount").get("ok", true)) and state.cash == cash_with_partial_space, "三次折扣必须整组交付，剩余空间不足时不得扣款")
-	state.synthesis_discount_uses = 6
-	var cash_at_cap := int(state.cash)
-	assert(not bool(state.buy_shop_offer("experiment_discount").get("ok", true)) and state.cash == cash_at_cap, "折扣达到六次上限后不得继续扣款")
-
-
-func _test_knowledge_shop() -> void:
-	var state = GameStateScript.new()
-	assert(not state.is_discovered("metal"), "金工知识购买前不得提前发现金")
-	var cash_before := int(state.cash)
-	var learned: Dictionary = state.buy_shop_offer("metal_knowledge")
-	assert(bool(learned.get("ok", false)) and state.is_discovered("metal"), "购买金工拓片必须立即永久发现金")
-	assert(state.cash == cash_before - 35, "金工拓片必须准确扣除35金贝")
-	var cash_after := int(state.cash)
-	assert(not bool(state.buy_shop_offer("metal_knowledge").get("ok", true)) and state.cash == cash_after, "永久知识不得重复购买或重复扣款")
-	var hint_before := int(state.cash)
-	var hint: Dictionary = state.buy_shop_offer("recipe_hint")
-	assert(bool(hint.get("ok", false)) and not str(hint.get("delivery", "")).is_empty(), "线索服务必须先找到可交付内容")
-	assert(state.cash == hint_before - 12 and state.last_shop_hint == str(hint.get("delivery", "")), "线索交付后必须准确扣款并保留最近线索")
-	var first_hint: String = str(state.last_shop_hint)
-	var second_hint: Dictionary = state.buy_shop_offer("recipe_hint")
-	assert(bool(second_hint.get("ok", false)) and state.last_shop_hint != first_hint, "连续购买不得交付同一条配方线索")
 	for raw_offer in state.shop_offers():
 		var offer: Dictionary = raw_offer
-		assert(not offer.has("stock") and not offer.has("amount"), "商店目录不得重新引入万物库存或购买数量")
+		assert(["hint", "discount"].has(str(offer["type"])), "商店只能提供线索和实验折扣，不得绕过谱系出售万物")
+		assert(not offer.has("unlock") and not offer.has("stock") and not offer.has("amount"), "商店服务不得包含直接解锁或库存数量字段")
+	var discovered_before := state.discovered_item_ids().size()
+	var hint_cash := int(state.cash)
+	var hint: Dictionary = state.buy_shop_offer("recipe_hint")
+	assert(bool(hint.get("ok", false)) and not str(hint.get("delivery", "")).is_empty(), "线索服务必须先找到可交付内容")
+	assert(state.discovered_item_ids().size() == discovered_before and state.cash == hint_cash - 12, "购买线索只应扣款并交付方向，不得直接发现万物")
+	assert(str(hint.get("delivery", "")).contains("关系") and str(hint.get("delivery", "")).contains("阶"), "商店线索必须说明关系语法和目标阶层")
 
 
-func _test_request_uses_discovery_without_consumption() -> void:
+func _test_request_uses_water_jar_without_consumption() -> void:
 	var state = GameStateScript.new()
-	state.discover_item("fish", "test")
-	state.discover_item("salt", "test")
-	var crafted: Dictionary = state.synthesize_pair("fish", "salt")
-	assert(bool(crafted.get("success", false)) and state.is_discovered("salted_fish"), "鱼与盐必须发现咸鱼保存方法")
+	state.cash = 500
+	for pair in [["water", "earth"], ["mud", "fire"], ["pottery", "water"]]:
+		var result: Dictionary = state.synthesize_pair(str(pair[0]), str(pair[1]))
+		assert(bool(result.get("success", false)), "阿葵委托路径上的固定关系必须能够完成")
+	assert(state.is_discovered("water_jar"), "陶器与水必须生成水罐")
 	var cash_before := int(state.cash)
 	var delivered: Dictionary = state.turn_in_aqiu_request()
-	assert(bool(delivered.get("ok", false)) and state.cash == cash_before + 80, "掌握咸鱼后必须能够完成阿葵委托")
-	assert(state.is_discovered("salted_fish"), "完成委托不得消耗永久万物")
+	assert(bool(delivered.get("ok", false)) and state.cash == cash_before + 80, "发现水罐后必须能够完成阿葵委托")
+	assert(state.is_discovered("water_jar"), "分享补水方法不得消耗永久水罐")
 
 
-func _test_race_aids_are_information_only() -> void:
+func _test_race_insights_are_information_only() -> void:
 	var locked = GameStateScript.new()
-	var blocked: Dictionary = locked.run_race(0, "独胜", 10, "tool")
-	assert(not bool(blocked.get("ok", true)) and locked.cash == 120, "未发现的竞速造物不得使用或扣款")
+	var blocked: Dictionary = locked.run_race(0, "独胜", 10, "rain")
+	assert(not bool(blocked.get("ok", true)) and locked.cash == 120, "未发现的四阶竞速万物不得使用或扣款")
 
 	var aided = GameStateScript.new()
 	var plain = GameStateScript.new()
@@ -123,41 +139,42 @@ func _test_race_aids_are_information_only() -> void:
 		state.free_race_ticket = 0
 		state.weather = "强风"
 		state.rng.seed = 778899
-	aided.discover_item("tool", "test")
-	var info: Dictionary = aided.race_aid_info("tool", 0)
-	assert(bool(info.get("ok", false)) and not str(info.get("insight", "")).is_empty(), "分段量具必须在下注前提供完整情报")
-	var aided_result: Dictionary = aided.run_race(0, "独胜", 100, "tool")
+	aided.discover_item("rain", "test")
+	var info: Dictionary = aided.race_aid_info("rain", 0)
+	assert(bool(info.get("ok", false)) and not str(info.get("insight", "")).is_empty(), "雨势推演必须在下注前提供天气适应信息")
+	var aided_result: Dictionary = aided.run_race(0, "独胜", 100, "rain")
 	var plain_result: Dictionary = plain.run_race(0, "独胜", 100)
-	assert(_race_order(aided_result) == _race_order(plain_result), "同一随机种子下信息造物不得改变赛果")
-	assert(int(aided_result.get("aid_fee", 0)) == 4 and aided.cash == plain.cash - 4, "分段量具只应额外收取4金贝部署费")
-	assert(aided.is_discovered("tool"), "竞速使用后造物必须永久保留")
-	for aid_id in ["tool", "sail", "calm_incense", "wind_bell"]:
+	assert(_race_order(aided_result) == _race_order(plain_result), "同一随机种子下竞速研读不得改变赛果")
+	assert(int(aided_result.get("aid_fee", 0)) == 4 and aided.cash == plain.cash - 4, "雨势推演只应额外收取4金贝服务费")
+	for aid_id in ["rain", "thunderstorm", "water_jar", "river"]:
 		aided.discover_item(aid_id, "test")
 		var aid_info: Dictionary = aided.race_aid_info(aid_id, 4)
-		assert(bool(aid_info.get("ok", false)) and not str(aid_info.get("insight", "")).is_empty(), "每种首版竞速造物必须提供独立可读情报")
+		assert(bool(aid_info.get("ok", false)) and not str(aid_info.get("insight", "")).is_empty(), "每种四阶竞速万物必须提供独立可读情报")
 
 
-func _test_discovery_ui_contract() -> void:
+func _test_full_screen_synthesis_ui() -> void:
+	root.size = Vector2i(1280, 720)
 	var scene = MainScene.instantiate()
 	root.add_child(scene)
 	await process_frame
 	scene._open_synthesis()
-	assert(scene.synthesis_left_library != null and scene.synthesis_right_library != null, "造化盆必须建立左右两个永久万物栏")
-	assert(scene.synthesis_left_library.get_child_count() == scene.synthesis_right_library.get_child_count(), "左右栏必须读取完全相同的发现集合")
-	assert(scene.synthesis_stage != null and _tree_contains_text(scene.synthesis_stage, "新组合实验费") == false, "未选择双方时中央舞台必须等待选择而不是提前扣费")
-	scene._select_synthesis_item("left", "water")
-	scene._select_synthesis_item("right", "earth")
-	assert(_tree_contains_text(scene.synthesis_stage, "新组合实验费 2金贝"), "中央舞台必须在确认前显示准确实验费")
-	assert(not _tree_contains_text(scene.modal_body, "数量") and not _tree_contains_text(scene.modal_body, "批量制作"), "造化盆界面不得保留万物数量和批量制作")
-	scene._open_shop()
-	assert(_tree_contains_text(scene.modal_body, "永久知识与研究服务"), "商店必须明确展示知识与服务定位")
-	assert(not _tree_contains_text(scene.modal_body, "出售") and not _tree_contains_text(scene.modal_body, "库存"), "商店界面不得保留出售与库存区")
-	scene.game.discover_item("tool", "test")
-	scene._open_race()
-	assert(scene.race_aid_option.item_count == 2, "逐风竞速必须显示不使用与已发现分段量具两个选项")
-	scene.race_aid_option.select(1)
-	scene._update_race_preview(1)
-	assert(scene.race_preview_label.text.contains("分段量具") and scene.race_preview_label.text.contains("起步"), "选择竞速造物后必须显式展示新增情报")
+	await process_frame
+	var table = scene.synthesis_table
+	assert(table.visible and not scene.modal_overlay.visible, "造化盆必须使用独立全屏页面而不是普通模态框")
+	assert(table.page_root != null and table.page_root.size.round() == Vector2(1280, 720), "造化盆全屏根节点必须覆盖1280×720视口")
+	assert(table.left_library != null and table.right_library != null, "独立页面必须建立左右两个万物图鉴")
+	assert(table.left_library.get_child_count() == 3 and table.right_library.get_child_count() == 3, "开局左右图鉴都必须只显示水、火、土")
+	assert(table.center_stage != null and not _has_ancestor_class(table.center_stage, "ScrollContainer"), "中央实验舞台必须固定且不能随图鉴滚动")
+	assert(_tree_contains_text(table.page_root, "1阶 3/3") and _tree_contains_text(table.page_root, "4阶 0/9"), "顶部必须显式展示四阶发现进度")
+	table._select_item("left", "water")
+	table._select_item("right", "fire")
+	assert(_tree_contains_text(table.center_stage, "首次尝试这段关系需要2金贝"), "中央舞台必须在提交前显示准确费用")
+	table._show_graph()
+	assert(table.graph_overlay.visible and _tree_contains_text(table.graph_overlay, "四阶原型共21个万物、18条固定关系"), "页面内必须提供可查询的四阶组合谱")
+	table._hide_graph()
+	assert(not _tree_contains_text(table.page_root, "物品数量") and not _tree_contains_text(table.page_root, "批量制作"), "独立页面不得出现数量背包或批量制作旧入口")
+	table.request_close()
+	assert(not table.visible and scene.player.controls_enabled, "退出造化盆后必须恢复岛上移动控制")
 	scene.free()
 
 
@@ -174,4 +191,13 @@ func _tree_contains_text(node: Node, needle: String) -> bool:
 	for child in node.get_children():
 		if _tree_contains_text(child, needle):
 			return true
+	return false
+
+
+func _has_ancestor_class(node: Node, class_name_value: String) -> bool:
+	var current := node.get_parent()
+	while current != null:
+		if current.is_class(class_name_value):
+			return true
+		current = current.get_parent()
 	return false
