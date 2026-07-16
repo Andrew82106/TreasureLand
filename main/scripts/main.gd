@@ -48,6 +48,9 @@ var modal_body: VBoxContainer
 var poker_table: Control
 var synthesis_table: Control
 var dive_table: Control
+var collection_view: String = "items"
+var collection_tier_filter: int = 0
+var collection_category_filter: String = "全部"
 
 var race_beast_option: OptionButton
 var race_ticket_option: OptionButton
@@ -385,6 +388,7 @@ func _build_ui() -> void:
 	synthesis_table = SynthesisTableScript.new()
 	synthesis_table.setup(game)
 	synthesis_table.closed.connect(_on_synthesis_table_closed)
+	synthesis_table.collection_requested.connect(_on_synthesis_collection_requested)
 	ui_root.add_child(synthesis_table)
 	dive_table = DiveTableScript.new()
 	dive_table.setup(game)
@@ -587,18 +591,85 @@ func _open_inventory() -> void:
 	_open_collection()
 
 
-func _open_collection() -> void:
-	_open_modal("万物图鉴")
+func _open_collection(view_value: String = "") -> void:
+	if not view_value.is_empty():
+		collection_view = view_value
+	var titles := {
+		"items": "万物图鉴",
+		"recent": "最近发现与实验",
+		"credentials": "账户凭证",
+		"marine": "海生图鉴"
+	}
+	_open_modal(str(titles.get(collection_view, "万物图鉴")))
 	var discovered_count: int = game.discovered_item_ids().size()
-	modal_body.add_child(_make_text("永久万物 %d / %d · 发现后可以无限参与合成，也不会因委托或竞速而消失。" % [discovered_count, game.ITEMS.size()], Color("f2d984")))
+	var goal: Dictionary = game.synthesis_goal()
+	modal_body.add_child(_make_text("永久万物 %d / %d · 稳定关系 %d / %d" % [discovered_count, game.ITEMS.size(), game.discovered_recipe_count(), game.RECIPES.size()], Color("f2d984")))
 	var progress := ProgressBar.new()
-	progress.custom_minimum_size.y = 20
+	progress.custom_minimum_size.y = 18
 	progress.show_percentage = false
 	progress.value = float(discovered_count) / float(game.ITEMS.size()) * 100.0
 	progress.add_theme_stylebox_override("background", _progress_style(Color("173039"), Color("526f73")))
 	progress.add_theme_stylebox_override("fill", _progress_style(Color("b3954f"), Color("f0d27e")))
 	modal_body.add_child(progress)
-	modal_body.add_child(_make_text("账户凭证：逐风免费体验券 %d · 实验折扣 %d次" % [game.free_race_ticket, game.synthesis_discount_uses], Color("9fdcc1")))
+	modal_body.add_child(_make_text("当前目标：%s · %s" % [str(goal.get("title", "")), str(goal.get("description", ""))], Color("9fdcc1")))
+
+	var nav := GridContainer.new()
+	nav.columns = 4
+	nav.add_theme_constant_override("h_separation", 8)
+	nav.add_theme_constant_override("v_separation", 8)
+	modal_body.add_child(nav)
+	nav.add_child(_make_button("万物总览", _set_collection_view.bind("items"), collection_view == "items"))
+	nav.add_child(_make_button("最近发现", _set_collection_view.bind("recent"), collection_view == "recent"))
+	nav.add_child(_make_button("账户凭证", _set_collection_view.bind("credentials"), collection_view == "credentials"))
+	nav.add_child(_make_button("海生图鉴", _set_collection_view.bind("marine"), collection_view == "marine"))
+
+	match collection_view:
+		"recent":
+			_build_collection_recent()
+		"credentials":
+			_build_collection_credentials()
+		"marine":
+			_build_collection_marine()
+		_:
+			_build_collection_items()
+
+
+func _set_collection_view(view_value: String) -> void:
+	collection_view = view_value
+	_open_collection()
+
+
+func _build_collection_items() -> void:
+	var filter_row := HBoxContainer.new()
+	filter_row.add_theme_constant_override("separation", 10)
+	modal_body.add_child(filter_row)
+	var tier_filter := OptionButton.new()
+	tier_filter.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	for label in ["全部阶层", "一阶", "二阶", "三阶", "四阶"]:
+		tier_filter.add_item(label)
+	tier_filter.select(collection_tier_filter)
+	tier_filter.item_selected.connect(_set_collection_tier_filter, CONNECT_DEFERRED)
+	filter_row.add_child(tier_filter)
+	var category_filter := OptionButton.new()
+	category_filter.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	category_filter.add_item("全部类别")
+	var categories: Array[String] = game.collection_categories()
+	for category in categories:
+		category_filter.add_item(category)
+	var selected_category_index := 0
+	if collection_category_filter != "全部":
+		var found_index: int = categories.find(collection_category_filter)
+		selected_category_index = found_index + 1 if found_index >= 0 else 0
+	category_filter.select(selected_category_index)
+	category_filter.item_selected.connect(_set_collection_category_filter.bind(categories), CONNECT_DEFERRED)
+	filter_row.add_child(category_filter)
+
+	var tier_parts: Array[String] = []
+	for tier in range(1, 5):
+		var tier_progress: Dictionary = game.tier_discovery_progress(tier)
+		tier_parts.append("%d阶 %d/%d" % [tier, int(tier_progress["found"]), int(tier_progress["total"])])
+	modal_body.add_child(_make_text("　".join(tier_parts), Color("a9c7c4")))
+
 	var grid := GridContainer.new()
 	grid.columns = 3
 	grid.add_theme_constant_override("h_separation", 10)
@@ -608,32 +679,230 @@ func _open_collection() -> void:
 	for raw_id in game.ITEMS.keys():
 		all_ids.append(str(raw_id))
 	all_ids.sort_custom(func(a: String, b: String):
-		var tier_a := int(game.ITEMS[a]["tier"])
-		var tier_b := int(game.ITEMS[b]["tier"])
-		if tier_a != tier_b:
-			return tier_a < tier_b
+		if game.item_tier(a) != game.item_tier(b):
+			return game.item_tier(a) < game.item_tier(b)
 		return game.item_name(a) < game.item_name(b)
 	)
+	var visible_count := 0
 	for item_id in all_ids:
 		var known: bool = game.is_discovered(item_id)
-		var panel := PanelContainer.new()
-		panel.custom_minimum_size = Vector2(230, 270)
-		panel.add_theme_stylebox_override("panel", _panel_style(Color("173039"), Color("b99e5d") if known else Color("41565a")))
-		var box := VBoxContainer.new()
-		box.alignment = BoxContainer.ALIGNMENT_CENTER
-		panel.add_child(box)
-		box.add_child(_item_art(item_id, 145.0, known))
-		var name_label := _make_text(game.item_name(item_id) if known else "尚未发现", Color("f1d68b") if known else Color("7d9294"))
-		name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		name_label.add_theme_font_size_override("font_size", 19)
-		box.add_child(name_label)
-		var aid_text := " · 逐风辅助" if game.RACE_AIDS.has(item_id) else ""
-		var detail_text := "%s · %s · %d阶%s\n%s" % [game.item_name(item_id), str(game.ITEMS[item_id]["category"]), int(game.ITEMS[item_id]["tier"]), aid_text, game.item_description(item_id)] if known else "继续观察世界线索或尝试新组合"
-		var detail := _make_text(detail_text, Color("bfd6d2") if known else Color("718487"))
+		if collection_tier_filter > 0 and game.item_tier(item_id) != collection_tier_filter:
+			continue
+		if collection_category_filter != "全部":
+			if not known or str(game.ITEMS[item_id].get("category", "")) != collection_category_filter:
+				continue
+		grid.add_child(_collection_item_card(item_id, known))
+		visible_count += 1
+	if visible_count == 0:
+		modal_body.add_child(_make_text("当前筛选下没有可显示的条目。", Color("8fa1a3")))
+	modal_body.add_child(_make_button("前往造化盆继续发现", _open_synthesis))
+
+
+func _set_collection_tier_filter(index: int) -> void:
+	collection_tier_filter = clampi(index, 0, 4)
+	_open_collection("items")
+
+
+func _set_collection_category_filter(index: int, categories: Array) -> void:
+	collection_category_filter = "全部" if index <= 0 else str(categories[index - 1])
+	_open_collection("items")
+
+
+func _collection_item_card(item_id: String, known: bool) -> Control:
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(230, 278)
+	panel.add_theme_stylebox_override("panel", _panel_style(Color("173039"), Color("b99e5d") if known else Color("41565a")))
+	var box := VBoxContainer.new()
+	box.alignment = BoxContainer.ALIGNMENT_CENTER
+	panel.add_child(box)
+	box.add_child(_item_art(item_id, 132.0, known))
+	var name_label := _make_text(game.item_name(item_id) if known else "◇ 未发现暗格", Color("f1d68b") if known else Color("7d9294"))
+	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_label.add_theme_font_size_override("font_size", 19)
+	box.add_child(name_label)
+	if known:
+		var use_badges: Array[String] = []
+		if game.RACE_AIDS.has(item_id):
+			use_badges.append("逐风")
+		if item_id in ["steam", "water_jar"] or game.item_tier(item_id) == 2:
+			use_badges.append("委托")
+		use_badges.append("塔")
+		var detail := _make_text("%s · %d阶 · %s\n用途：%s" % [
+			str(game.ITEMS[item_id]["category"]), game.item_tier(item_id),
+			game.discovery_source_label(item_id), " / ".join(use_badges)
+		], Color("bfd6d2"))
 		detail.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		box.add_child(detail)
+		box.add_child(_make_button("查看详情", _open_collection_item.bind(item_id)))
+	else:
+		var hint := _make_text("%d阶未知万物\n不会提前显示名称、类别或配方" % game.item_tier(item_id), Color("718487"))
+		hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		box.add_child(hint)
+	return panel
+
+
+func _build_collection_recent() -> void:
+	modal_body.add_child(_make_text("最近永久发现", Color("f1d687")))
+	var recent_grid := GridContainer.new()
+	recent_grid.columns = 3
+	recent_grid.add_theme_constant_override("h_separation", 10)
+	recent_grid.add_theme_constant_override("v_separation", 10)
+	modal_body.add_child(recent_grid)
+	for item_id in game.recent_discovered_item_ids(6):
+		recent_grid.add_child(_collection_item_card(item_id, true))
+	modal_body.add_child(_make_text("最近实验记录", Color("f1d687")))
+	if game.recent_synthesis_pairs.is_empty():
+		modal_body.add_child(_make_text("还没有提交过造化盆实验。"))
+	for pair_key in game.recent_synthesis_pairs:
+		var record: Dictionary = game.attempted_pairs.get(pair_key, {})
+		if record.is_empty():
+			continue
+		var result_text: String = game.item_name(str(record.get("output", ""))) if bool(record.get("success", false)) else str(record.get("failure_title", "未成"))
+		var line := PanelContainer.new()
+		line.add_theme_stylebox_override("panel", _panel_style(Color("173039"), Color("55777b")))
+		var row := HBoxContainer.new()
+		line.add_child(row)
+		var copy := _make_text("%s + %s → %s\n第%d天 %d/16 · 已付%d金贝 · 复查免费" % [
+			game.item_name(str(record.get("left_id", ""))), game.item_name(str(record.get("right_id", ""))),
+			result_text, int(record.get("day", 1)), int(record.get("tide", 1)), int(record.get("cost_paid", 0))
+		], Color("c7dcda"))
+		copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(copy)
+		row.add_child(_make_button("送回造化盆", _open_synthesis_with_pair.bind(str(record.get("left_id", "")), str(record.get("right_id", "")))))
+		modal_body.add_child(line)
+
+
+func _build_collection_credentials() -> void:
+	modal_body.add_child(_make_text("凭证具有次数或资格，不能放入造化盆，也不与永久万物混排。", Color("a9c7c4")))
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 10)
+	modal_body.add_child(grid)
+	grid.add_child(_credential_card("逐风免费体验券", "%d次" % game.free_race_ticket, "在逐风竞速报名时自动优先使用；不会消耗永久万物。", Color("7ed5aa")))
+	grid.add_child(_credential_card("实验折扣", "%d/6次" % game.synthesis_discount_uses, "只在真正执行未尝试组合时消耗，使实验费减半并向上取整。", Color("e5c96f")))
+	grid.add_child(_credential_card("命运牌会资格", "正常牌会已完成" if game.normal_poker_completed else "尚未完成正常牌会", "影响米洛等人物事件，不替代任何桌级财富门槛。", Color("b99ad9")))
+	grid.add_child(_credential_card("已认识核心人物", "%d/6名" % game.npc_map_entries().size(), "决定地图人物追踪与可分享对象，不关闭公共服务。", Color("7abdc8")))
+	modal_body.add_child(_make_text("万象塔永久印记", Color("f1d687")))
+	for raw_floor in game.tower_floor_states():
+		var floor: Dictionary = raw_floor
+		modal_body.add_child(_make_text("%s %s · %s" % [
+			"✓" if bool(floor["unlocked"]) else "◇",
+			str(floor["name"]), str(floor["description"])
+		], Color("f0d27e") if bool(floor["unlocked"]) else Color("82989a")))
+
+
+func _credential_card(title_text: String, value_text: String, description: String, accent: Color) -> Control:
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(350, 130)
+	panel.add_theme_stylebox_override("panel", _panel_style(Color("173039"), accent))
+	var box := VBoxContainer.new()
+	panel.add_child(box)
+	box.add_child(_make_text(title_text, accent))
+	var value := _make_text(value_text, Color("f5edcf"))
+	value.add_theme_font_size_override("font_size", 21)
+	box.add_child(value)
+	box.add_child(_make_text(description, Color("b9cfcd")))
+	return panel
+
+
+func _build_collection_marine() -> void:
+	modal_body.add_child(_make_text("海生图鉴是永久观察记录；鱼获箱是可出售实例。出售鱼获不会删除海生记录，也不会改变万物图鉴。", Color("a9c7c4")))
+	modal_body.add_child(_make_text("海生记录 %d/%d · 鱼获箱 %d条" % [game.marine_discoveries.size(), game.FISH_SPECIES.size(), game.fish_catch_inventory.size()], Color("f1d687")))
+	var grid := GridContainer.new()
+	grid.columns = 3
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 10)
+	modal_body.add_child(grid)
+	var species_ids: Array[String] = []
+	for raw_id in game.FISH_SPECIES.keys():
+		species_ids.append(str(raw_id))
+	species_ids.sort()
+	for species_id in species_ids:
+		var known: bool = game.marine_discoveries.has(species_id)
+		var species: Dictionary = game.FISH_SPECIES[species_id]
+		var panel := PanelContainer.new()
+		panel.custom_minimum_size = Vector2(230, 120)
+		panel.add_theme_stylebox_override("panel", _panel_style(Color("173039"), species.get("color", Color("55777b")) if known else Color("41565a")))
+		var box := VBoxContainer.new()
+		panel.add_child(box)
+		box.add_child(_make_text(str(species["name"]) if known else "◇ 未知海生记录", Color("c8edf0") if known else Color("7d9294")))
+		if known:
+			var record: Dictionary = game.marine_size_records.get(species_id, {})
+			var held_count := 0
+			for raw_catch in game.fish_catch_inventory:
+				if str(raw_catch.get("species_id", "")) == species_id:
+					held_count += 1
+			box.add_child(_make_text("%s · %s\n最大尺寸：%s · 鱼获箱%d条" % [
+				str(species["rarity"]), str(species["behavior"]), str(record.get("size", "尚无纪录")), held_count
+			], Color("b9cfcd")))
+		else:
+			box.add_child(_make_text("通过海岸潜捕观察并捕获后记录。", Color("718487")))
 		grid.add_child(panel)
-	modal_body.add_child(_make_button("前往造化盆继续发现", _open_synthesis))
+	modal_body.add_child(_make_button("前往海岸潜捕", _open_dive.bind("prep")))
+
+
+func _open_collection_item(item_id: String) -> void:
+	if not game.is_discovered(item_id):
+		_open_collection("items")
+		return
+	var record: Dictionary = game.discovery_record(item_id)
+	_open_modal("%s · 万物详情" % game.item_name(item_id))
+	var header := HBoxContainer.new()
+	header.add_theme_constant_override("separation", 16)
+	header.add_child(_item_art(item_id, 210.0, true))
+	var copy := VBoxContainer.new()
+	copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(copy)
+	var title := _make_text("%s · %s · %d阶" % [game.item_name(item_id), str(game.ITEMS[item_id]["category"]), game.item_tier(item_id)], Color("f1d687"))
+	title.add_theme_font_size_override("font_size", 23)
+	copy.add_child(title)
+	copy.add_child(_make_text(game.item_description(item_id), Color("d5e6df")))
+	copy.add_child(_make_text("首次来源：%s\n首次时间：第%d天 %d/16潮刻" % [
+		game.discovery_source_label(item_id), int(record.get("first_day", 1)), int(record.get("first_tide", 1))
+	], Color("9edbb6")))
+	var inputs: Array = record.get("inputs", [])
+	if inputs.size() == 2:
+		copy.add_child(_make_text("首次关系：%s + %s → %s\n关系语法：%s\n%s" % [
+			game.item_name(str(inputs[0])), game.item_name(str(inputs[1])), game.item_name(item_id),
+			str(record.get("relation", "")), str(record.get("logic", ""))
+		], Color("c4d9d5")))
+	else:
+		copy.add_child(_make_text("根万物：%s" % str(record.get("logic", "上岛时已经掌握。")), Color("c4d9d5")))
+	copy.add_child(_make_text("已验证涉及关系 %d组 · 尚未尝试配对 %d组" % [
+		game.item_verified_relation_count(item_id), game.item_untried_pair_count(item_id)
+	], Color("f0cf82")))
+	modal_body.add_child(header)
+	modal_body.add_child(_make_text("已开放用途", Color("f1d687")))
+	for raw_use in game.item_cross_module_uses(item_id):
+		var use: Dictionary = raw_use
+		var panel := PanelContainer.new()
+		panel.add_theme_stylebox_override("panel", _panel_style(Color("173039"), Color("55777b")))
+		panel.add_child(_make_text("%s｜%s\n%s" % [str(use["module"]), str(use["label"]), str(use["detail"])], Color("c7dcda")))
+		modal_body.add_child(panel)
+	var actions := GridContainer.new()
+	actions.columns = 3
+	actions.add_theme_constant_override("h_separation", 8)
+	actions.add_theme_constant_override("v_separation", 8)
+	modal_body.add_child(actions)
+	actions.add_child(_make_button("放入造化盆左侧", _open_synthesis_with_item.bind(item_id, "left")))
+	actions.add_child(_make_button("放入造化盆右侧", _open_synthesis_with_item.bind(item_id, "right")))
+	if game.RACE_AIDS.has(item_id):
+		actions.add_child(_make_button("查看逐风用途", _open_race))
+	actions.add_child(_make_button("查看万象塔", _open_tower))
+	actions.add_child(_make_button("返回图鉴", _open_collection.bind("items")))
+
+
+func _open_synthesis_with_item(item_id: String, side: String) -> void:
+	modal_overlay.visible = false
+	synthesis_table.open_with_item(item_id, side)
+	player.controls_enabled = false
+
+
+func _open_synthesis_with_pair(left_item_id: String, right_item_id: String) -> void:
+	modal_overlay.visible = false
+	synthesis_table.open_with_pair(left_item_id, right_item_id)
+	player.controls_enabled = false
 
 
 func _open_wealth() -> void:
@@ -721,6 +990,10 @@ func _open_synthesis() -> void:
 func _on_synthesis_table_closed() -> void:
 	player.controls_enabled = true
 	_refresh_hud()
+
+
+func _on_synthesis_collection_requested() -> void:
+	_open_collection()
 
 
 func _open_dive(initial_mode: String = "prep") -> void:
@@ -1278,17 +1551,33 @@ func _open_tower() -> void:
 	modal_body.add_child(_art_banner(IslandGroundMap, 210.0))
 	var count: int = int(game.discovered_recipe_count())
 	modal_body.add_child(_make_text("塔身会回应你真正理解并留下的关系。当前谱系：%d / %d。" % [count, game.RECIPES.size()], Color("d8f4f8")))
-	var floors := [
-		{"need": 3, "name": "潮火基座", "reward": "发现全部二阶万物"},
-		{"need": 14, "name": "云泥回廊", "reward": "发现全部十一种三阶万物"},
-		{"need": 34, "name": "众生工坊", "reward": "发现至少二十种四阶万物"},
-		{"need": 69, "name": "四象观台", "reward": "完成七十二种万物的四阶谱系"}
-	]
-	for raw_floor in floors:
+	for raw_floor in game.tower_floor_states():
 		var floor: Dictionary = raw_floor
-		var unlocked: bool = count >= int(floor["need"])
-		var prefix := "✓ 已点亮" if unlocked else "◇ 尚需%d种" % (int(floor["need"]) - count)
-		modal_body.add_child(_make_text("%s　%s · %s" % [prefix, str(floor["name"]), str(floor["reward"])], Color("f0d27e") if unlocked else Color("82989a")))
+		var unlocked: bool = bool(floor["unlocked"])
+		var panel := PanelContainer.new()
+		panel.add_theme_stylebox_override("panel", _panel_style(Color("173039"), Color("c0a65e") if unlocked else Color("465d61")))
+		var box := VBoxContainer.new()
+		panel.add_child(box)
+		box.add_child(_make_text("%s　%s" % ["✓ 已点亮" if unlocked else "◇ 尚未点亮", str(floor["name"])], Color("f0d27e") if unlocked else Color("91a4a5")))
+		box.add_child(_make_text("%s · %d/%d条关系" % [str(floor["description"]), int(floor["current"]), int(floor["need"])], Color("c5d8d5")))
+		var progress := ProgressBar.new()
+		progress.custom_minimum_size.y = 15
+		progress.show_percentage = false
+		progress.value = float(floor["progress"]) * 100.0
+		progress.add_theme_stylebox_override("background", _progress_style(Color("11272e"), Color("40585c")))
+		progress.add_theme_stylebox_override("fill", _progress_style(Color("9d8747"), Color("e5c96f")))
+		box.add_child(progress)
+		modal_body.add_child(panel)
+	var goal: Dictionary = game.synthesis_goal()
+	if bool(goal.get("complete", false)):
+		modal_body.add_child(_make_text("四象观台已经完整点亮。你获得永久头衔“万象之主”，仍可免费复查全部关系。", Color("f4df8a")))
+	else:
+		modal_body.add_child(_make_text("下一目标：%s · 还需%d条稳定关系。%s" % [
+			str(goal.get("title", "")), int(goal.get("remaining", 0)),
+			("建议从%s继续观察，它仍连接%d条可直接推导关系。" % [str(goal.get("anchor_name", "")), int(goal.get("anchor_opportunities", 0))]) if not str(goal.get("anchor_name", "")).is_empty() else ""
+		], Color("9edbb6")))
+		if not str(goal.get("anchor_id", "")).is_empty():
+			modal_body.add_child(_make_button("把%s放入造化盆左侧" % str(goal.get("anchor_name", "")), _open_synthesis_with_item.bind(str(goal.get("anchor_id", "")), "left")))
 	modal_body.add_child(_make_button("查看万物图鉴", _open_collection))
 	modal_body.add_child(_make_button("前往造化盆", _open_synthesis))
 

@@ -28,6 +28,12 @@ const RACE_AIDS := {
 	"water_jar": {"name": "补水观察", "fee": 6, "description": "比较所选逐风兽的耐力、稳定与巡航能力。"},
 	"river": {"name": "河势比照", "fee": 8, "description": "比较所选逐风兽在地形段的基础表现与场内排名。"}
 }
+const TOWER_FLOORS := [
+	{"id": "tidefire_base", "name": "潮火基座", "need": 3, "description": "完成全部3条二阶关系"},
+	{"id": "cloudmud_gallery", "name": "云泥回廊", "need": 14, "description": "累计完成14条关系，发现全部三阶万物"},
+	{"id": "living_workshop", "name": "众生工坊", "need": 34, "description": "累计完成34条关系，至少发现20种四阶万物"},
+	{"id": "fourfold_observatory", "name": "四象观台", "need": 69, "description": "完成69条关系与72种永久万物"}
+]
 
 const RACE_BEASTS := [
 	{"id": "cloudfin", "name": "云鳍", "speed": 78, "stamina": 62, "burst": 74, "stability": 70, "course": 82, "rider": 68, "form": 5},
@@ -60,7 +66,7 @@ const TIME_STATE_UI := "ui_paused"
 const TIME_STATE_ACTIVITY := "activity_snapshot"
 const TIME_STATE_FAST_FORWARD := "fast_forward"
 const TIME_STATE_DAY_END := "day_end_hold"
-const SAVE_VERSION := 2
+const SAVE_VERSION := 3
 const MANUAL_SAVE_PATH := "user://saves/manual_save.json"
 const POKER_TIERS := [
 	{"name": "潮边小桌", "buy_in": 80, "wealth_required": 0, "small_blind": 1, "big_blind": 2, "description": "认识规则与人物，输赢幅度较小"},
@@ -109,6 +115,8 @@ var time_event_log: Array = []
 var discovered := {
 	"water": true, "fire": true, "earth": true
 }
+var discovery_records := {}
+var tower_milestones := {}
 var attempted_pairs := {}
 var recent_synthesis_pairs: Array[String] = []
 var synthesis_discount_uses: int = 0
@@ -181,6 +189,8 @@ var rng := RandomNumberGenerator.new()
 func _init() -> void:
 	rng.seed = 20260713
 	_initialize_npc_state()
+	_initialize_discovery_records()
+	_sync_tower_milestones(false)
 	_generate_daily_schedule()
 	_initialize_fish_market()
 	_load_recent_oracle_records()
@@ -213,6 +223,8 @@ func build_save_data(world_state: Dictionary = {}) -> Dictionary:
 			"rng_seed": str(rng.seed),
 			"rng_state": str(rng.state),
 			"discovered": discovered.duplicate(true),
+			"discovery_records": discovery_records.duplicate(true),
+			"tower_milestones": tower_milestones.duplicate(true),
 			"attempted_pairs": attempted_pairs.duplicate(true),
 			"recent_synthesis_pairs": recent_synthesis_pairs.duplicate(),
 			"synthesis_discount_uses": synthesis_discount_uses,
@@ -352,6 +364,8 @@ func restore_save_data(data: Dictionary) -> Dictionary:
 	discovered = saved.get("discovered", {}).duplicate(true)
 	for root_id in INITIAL_DISCOVERIES:
 		discovered[root_id] = true
+	discovery_records = saved.get("discovery_records", {}).duplicate(true)
+	tower_milestones = saved.get("tower_milestones", {}).duplicate(true)
 	attempted_pairs = saved.get("attempted_pairs", {}).duplicate(true)
 	recent_synthesis_pairs.clear()
 	for raw_key in saved.get("recent_synthesis_pairs", []):
@@ -408,7 +422,11 @@ func restore_save_data(data: Dictionary) -> Dictionary:
 	aqiu_request_active = bool(saved.get("aqiu_request_active", false))
 	aqiu_request_done = bool(saved.get("aqiu_request_done", false))
 	_initialize_npc_state()
+	_initialize_discovery_records()
+	_sync_tower_milestones(false)
 	ultimate_created = bool(saved.get("ultimate_created", false))
+	if bool(tower_milestones.get("fourfold_observatory", false)):
+		ultimate_created = true
 	poker_dealer_seat = int(saved.get("poker_dealer_seat", -1))
 	poker_npc_wallets = saved.get("poker_npc_wallets", []).duplicate(true)
 	poker_npc_brought = saved.get("poker_npc_brought", []).duplicate(true)
@@ -436,7 +454,7 @@ func _validate_save_data(data: Dictionary) -> Dictionary:
 	if not data.get("state", {}) is Dictionary or not data.get("world", {}) is Dictionary:
 		return {"ok": false, "text": "存档结构损坏，未修改当前进度。"}
 	var saved: Dictionary = data["state"]
-	for key in ["daily_schedule", "discovered", "attempted_pairs", "relationships", "memories", "known_npcs", "npc_topic_reads", "npc_request_states", "npc_shared_creations", "npc_shared_fish", "npc_deep_talk_days", "npc_talk_counts", "npc_memory_rewarded", "dive_state", "marine_discoveries", "marine_size_records", "fish_market_quotes", "fish_market_stock", "fish_market_demand", "fish_market_reasons", "processed_fish_sales", "dive_equipment", "last_dive_result"]:
+	for key in ["daily_schedule", "discovered", "discovery_records", "tower_milestones", "attempted_pairs", "relationships", "memories", "known_npcs", "npc_topic_reads", "npc_request_states", "npc_shared_creations", "npc_shared_fish", "npc_deep_talk_days", "npc_talk_counts", "npc_memory_rewarded", "dive_state", "marine_discoveries", "marine_size_records", "fish_market_quotes", "fish_market_stock", "fish_market_demand", "fish_market_reasons", "processed_fish_sales", "dive_equipment", "last_dive_result"]:
 		if saved.has(key) and not saved[key] is Dictionary:
 			return {"ok": false, "text": "存档字段%s损坏，未修改当前进度。" % key}
 	for key in ["time_event_log", "recent_synthesis_pairs", "wealth_history", "poker_npc_wallets", "poker_npc_brought", "poker_npc_present", "fish_catch_inventory", "fish_market_orders", "fish_market_history", "fish_market_transactions"]:
@@ -891,14 +909,284 @@ func environment_resident_entries() -> Array:
 	return result
 
 
+func _initialize_discovery_records() -> void:
+	for root_id in INITIAL_DISCOVERIES:
+		if not discovery_records.has(root_id) or not discovery_records[root_id] is Dictionary:
+			discovery_records[root_id] = {
+				"item_id": root_id,
+				"first_source": "initial",
+				"first_day": 1,
+				"first_tide": 1,
+				"inputs": [],
+				"relation": "根万物",
+				"logic": "上岛时已经掌握的世界根源。"
+			}
+	for raw_id in discovered.keys():
+		var item_id := str(raw_id)
+		if not bool(discovered.get(item_id, false)) or not ITEMS.has(item_id):
+			continue
+		if discovery_records.has(item_id) and discovery_records[item_id] is Dictionary:
+			var existing: Dictionary = discovery_records[item_id]
+			existing["item_id"] = item_id
+			existing["first_source"] = str(existing.get("first_source", "legacy"))
+			existing["first_day"] = maxi(1, int(existing.get("first_day", 1)))
+			existing["first_tide"] = clampi(int(existing.get("first_tide", 1)), 1, 16)
+			existing["inputs"] = existing.get("inputs", []).duplicate() if existing.get("inputs", []) is Array else []
+			existing["relation"] = str(existing.get("relation", ""))
+			existing["logic"] = str(existing.get("logic", item_description(item_id)))
+			discovery_records[item_id] = existing
+			continue
+		var recipe := _recipe_for_output(item_id)
+		var pair_record: Dictionary = {}
+		if not recipe.is_empty():
+			var inputs: Array = recipe.get("inputs", [])
+			if inputs.size() == 2:
+				pair_record = attempted_pairs.get(synthesis_pair_key(str(inputs[0]), str(inputs[1])), {})
+		discovery_records[item_id] = {
+			"item_id": item_id,
+			"first_source": "synthesis" if not recipe.is_empty() else "legacy",
+			"first_day": maxi(1, int(pair_record.get("day", 1))),
+			"first_tide": clampi(int(pair_record.get("tide", 1)), 1, 16),
+			"inputs": recipe.get("inputs", []).duplicate() if not recipe.is_empty() else [],
+			"relation": str(recipe.get("relation", "旧版本迁移")),
+			"logic": str(recipe.get("logic", item_description(item_id)))
+		}
+
+
+func _recipe_for_output(item_id: String) -> Dictionary:
+	for raw_recipe in RECIPES:
+		var recipe: Dictionary = raw_recipe
+		if str(recipe.get("output", "")) == item_id:
+			return recipe
+	return {}
+
+
+func discovery_record(item_id: String) -> Dictionary:
+	var record = discovery_records.get(item_id, {})
+	return record.duplicate(true) if record is Dictionary else {}
+
+
+func discovery_source_label(item_id: String) -> String:
+	var source := str(discovery_record(item_id).get("first_source", "unknown"))
+	return {
+		"initial": "上岛时掌握",
+		"synthesis": "造化盆首次合成",
+		"legacy": "旧版本进度迁移"
+	}.get(source, source)
+
+
+func item_verified_relation_count(item_id: String) -> int:
+	var count := 0
+	for raw_record in attempted_pairs.values():
+		if not raw_record is Dictionary:
+			continue
+		var record: Dictionary = raw_record
+		if str(record.get("left_id", "")) == item_id or str(record.get("right_id", "")) == item_id:
+			count += 1
+	return count
+
+
+func item_untried_pair_count(item_id: String) -> int:
+	if not is_discovered(item_id) or item_tier(item_id) >= MAX_SYNTHESIS_TIER:
+		return 0
+	var count := 0
+	for other_id in discovered_item_ids():
+		if item_tier(other_id) >= MAX_SYNTHESIS_TIER:
+			continue
+		if synthesis_attempt_record(item_id, other_id).is_empty():
+			count += 1
+	return count
+
+
+func item_cross_module_uses(item_id: String) -> Array:
+	if not is_discovered(item_id):
+		return []
+	var result: Array = []
+	result.append({
+		"module": "万物合成",
+		"label": "继续研究关系" if item_tier(item_id) < MAX_SYNTHESIS_TIER else "四阶终点收藏",
+		"detail": "%d条涉及它的组合已验证，仍有%d组已知万物配对尚未尝试。" % [item_verified_relation_count(item_id), item_untried_pair_count(item_id)]
+	})
+	result.append({
+		"module": "万象塔",
+		"label": "永久计入谱系",
+		"detail": "该发现已经计入塔层点亮进度，不需要献出或消耗。"
+	})
+	result.append({
+		"module": "人物社交",
+		"label": "展示与分享方法",
+		"detail": "可以向已认识的核心NPC分享；符合人物研究方向时会形成独立记忆。"
+	})
+	if RACE_AIDS.has(item_id):
+		var aid: Dictionary = RACE_AIDS[item_id]
+		result.append({
+			"module": "逐风竞速",
+			"label": str(aid.get("name", "赛事研读")),
+			"detail": str(aid.get("description", "提供公开情报，不改变赛果。"))
+		})
+	var request_labels := {
+		"steam": "榕奶奶委托“盆中的第一缕雾”",
+		"water_jar": "阿葵委托“不会消失的补水方法”"
+	}
+	if request_labels.has(item_id):
+		result.append({
+			"module": "人物委托",
+			"label": str(request_labels[item_id]),
+			"detail": "委托只读取永久发现状态，交付方法不会移除万物。"
+		})
+	if item_tier(item_id) == 2:
+		result.append({
+			"module": "研究商店",
+			"label": "阿拓的二阶研究委托",
+			"detail": "任意二阶万物都能证明你已独立完成一条根关系。"
+		})
+	return result
+
+
+func collection_categories() -> Array[String]:
+	var result: Array[String] = []
+	for raw_item in ITEMS.values():
+		var item: Dictionary = raw_item
+		var category := str(item.get("category", "未分类"))
+		if not result.has(category):
+			result.append(category)
+	result.sort()
+	return result
+
+
+func recent_discovered_item_ids(limit: int = 8) -> Array[String]:
+	var ids := discovered_item_ids()
+	ids.sort_custom(func(a: String, b: String):
+		var record_a := discovery_record(a)
+		var record_b := discovery_record(b)
+		if int(record_a.get("first_day", 1)) != int(record_b.get("first_day", 1)):
+			return int(record_a.get("first_day", 1)) > int(record_b.get("first_day", 1))
+		if int(record_a.get("first_tide", 1)) != int(record_b.get("first_tide", 1)):
+			return int(record_a.get("first_tide", 1)) > int(record_b.get("first_tide", 1))
+		if item_tier(a) != item_tier(b):
+			return item_tier(a) > item_tier(b)
+		return item_name(a) < item_name(b)
+	)
+	if ids.size() > limit:
+		ids.resize(limit)
+	return ids
+
+
+func tower_floor_states() -> Array:
+	var current := discovered_recipe_count()
+	var result: Array = []
+	for raw_floor in TOWER_FLOORS:
+		var floor: Dictionary = raw_floor
+		var entry := floor.duplicate(true)
+		entry["current"] = mini(current, int(floor["need"]))
+		entry["unlocked"] = current >= int(floor["need"])
+		entry["remaining"] = maxi(0, int(floor["need"]) - current)
+		entry["progress"] = clampf(float(current) / float(int(floor["need"])), 0.0, 1.0)
+		result.append(entry)
+	return result
+
+
+func _sync_tower_milestones(announce: bool) -> Array[String]:
+	var newly_unlocked: Array[String] = []
+	var current := discovered_recipe_count()
+	for raw_floor in TOWER_FLOORS:
+		var floor: Dictionary = raw_floor
+		var floor_id := str(floor["id"])
+		var unlocked := current >= int(floor["need"])
+		if not unlocked:
+			tower_milestones.erase(floor_id)
+			continue
+		if bool(tower_milestones.get(floor_id, false)):
+			continue
+		tower_milestones[floor_id] = true
+		newly_unlocked.append(floor_id)
+		if announce:
+			var summary := "你点亮了万象塔的%s：%s。" % [str(floor["name"]), str(floor["description"])]
+			add_npc_memory("granny", {
+				"memory_id": "tower_%s" % floor_id,
+				"type": "tower_milestone",
+				"importance": 5,
+				"persistent": true,
+				"summary": summary,
+				"relationship_delta": 0,
+				"effects": {"dialogue_warmth": 2, "private_topic_access": 1}
+			})
+			add_npc_memory("mia", {
+				"memory_id": "tower_%s" % floor_id,
+				"type": "tower_milestone",
+				"importance": 4,
+				"summary": summary,
+				"relationship_delta": 0,
+				"effects": {"dialogue_warmth": 1}
+			})
+			_notice("万象塔 · %s已经点亮。" % str(floor["name"]))
+	if bool(tower_milestones.get("fourfold_observatory", false)):
+		ultimate_created = true
+	return newly_unlocked
+
+
+func synthesis_goal() -> Dictionary:
+	var current := discovered_recipe_count()
+	for raw_floor in TOWER_FLOORS:
+		var floor: Dictionary = raw_floor
+		if current >= int(floor["need"]):
+			continue
+		var anchor_id := ""
+		var anchor_count := -1
+		for item_id in discovered_item_ids():
+			var opportunity_count := available_relation_count(item_id)
+			if opportunity_count > anchor_count:
+				anchor_id = item_id
+				anchor_count = opportunity_count
+		if anchor_count <= 0:
+			for item_id in discovered_item_ids():
+				var pair_count := item_untried_pair_count(item_id)
+				if pair_count > anchor_count:
+					anchor_id = item_id
+					anchor_count = pair_count
+		return {
+			"complete": false,
+			"floor_id": str(floor["id"]),
+			"title": "点亮%s" % str(floor["name"]),
+			"description": str(floor["description"]),
+			"current": current,
+			"target": int(floor["need"]),
+			"remaining": int(floor["need"]) - current,
+			"anchor_id": anchor_id,
+			"anchor_name": item_name(anchor_id) if not anchor_id.is_empty() else "",
+			"anchor_opportunities": maxi(0, anchor_count)
+		}
+	return {
+		"complete": true,
+		"title": "四阶谱系已经完成",
+		"description": "72种永久万物与69条稳定关系已经全部进入图鉴。",
+		"current": current,
+		"target": RECIPES.size(),
+		"remaining": 0,
+		"anchor_id": "",
+		"anchor_name": "",
+		"anchor_opportunities": 0
+	}
+
+
 func is_discovered(item_id: String) -> bool:
 	return bool(discovered.get(item_id, false))
 
 
-func discover_item(item_id: String, _source: String = "world") -> bool:
+func discover_item(item_id: String, source: String = "world", details: Dictionary = {}) -> bool:
 	if not ITEMS.has(item_id) or is_discovered(item_id):
 		return false
 	discovered[item_id] = true
+	discovery_records[item_id] = {
+		"item_id": item_id,
+		"first_source": source,
+		"first_day": day,
+		"first_tide": tide,
+		"inputs": details.get("inputs", []).duplicate() if details.get("inputs", []) is Array else [],
+		"relation": str(details.get("relation", "")),
+		"logic": str(details.get("logic", item_description(item_id))),
+		"pair_key": str(details.get("pair_key", ""))
+	}
 	var tier := item_tier(item_id)
 	if tier >= 2:
 		for npc_id in ["granny", "shopkeeper", "mia"]:
@@ -911,6 +1199,7 @@ func discover_item(item_id: String, _source: String = "world") -> bool:
 				"relationship_delta": 0,
 				"effects": {"dialogue_warmth": 1, "private_topic_access": 1 if tier >= 4 else 0}
 			})
+	_sync_tower_milestones(true)
 	changed.emit()
 	return true
 
@@ -1073,7 +1362,20 @@ func synthesize_pair(left_id: String, right_id: String) -> Dictionary:
 		record["suggestion"] = str(feedback["suggestion"])
 	else:
 		var output_id := str(matched["output"])
-		record["first_discovery"] = discover_item(output_id, "synthesis")
+		var tower_before := tower_milestones.duplicate(true)
+		record["first_discovery"] = discover_item(output_id, "synthesis", {
+			"inputs": [left_id, right_id],
+			"relation": str(matched.get("relation", "关系")),
+			"logic": str(matched.get("logic", "")),
+			"pair_key": pair_key
+		})
+		var tower_unlocks: Array[String] = []
+		for raw_floor in TOWER_FLOORS:
+			var floor: Dictionary = raw_floor
+			var floor_id := str(floor["id"])
+			if bool(tower_milestones.get(floor_id, false)) and not bool(tower_before.get(floor_id, false)):
+				tower_unlocks.append(str(floor["name"]))
+		record["tower_unlocks"] = tower_unlocks
 		record["category"] = str(ITEMS[output_id]["category"])
 		record["tier"] = int(ITEMS[output_id]["tier"])
 		record["relation"] = str(matched.get("relation", "关系"))

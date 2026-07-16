@@ -45,10 +45,38 @@ func _run() -> void:
 		assert(not table.busy, "A no-animation synthesis must finish after its deferred rebuild.")
 		assert(bool(table.last_result.get("ok", false)), "The synthesis result must survive rebuilding its emitter tree.")
 
-	# The production crash occurred after Tween.finished resumed _submit(). Run
-	# real presentations at high speed so the test also covers that native signal
-	# lifetime instead of only the no-animation shortcut.
+	# Reproduce the player path at normal animation speed with a first discovery.
+	# This is the path that previously replaced a Tween while its own finished
+	# signal was still being emitted and could terminate Godot with signal 11.
 	table.animations_enabled = true
+	table.reduced_motion = false
+	table.animation_speed_scale = 1.0
+	var normal_left := _find_button(table.left_library, "水")
+	assert(normal_left != null, "The normal-speed left selector must exist.")
+	normal_left.pressed.emit()
+	await process_frame
+	await process_frame
+	var normal_right := _find_button(table.right_library, "土")
+	assert(normal_right != null, "The normal-speed right selector must exist.")
+	normal_right.pressed.emit()
+	await process_frame
+	await process_frame
+	table.action_button.pressed.emit()
+	var normal_start_budget := 20
+	while not table.busy and normal_start_budget > 0:
+		await process_frame
+		normal_start_budget -= 1
+	assert(table.busy, "The normal-speed submit callback must start.")
+	var normal_frame_budget := 360
+	while table.busy and normal_frame_budget > 0:
+		await process_frame
+		normal_frame_budget -= 1
+	assert(not table.busy and state.is_discovered("mud"), "A normal-speed first discovery must finish without releasing a Tween inside its own signal.")
+	await process_frame
+	await process_frame
+
+	# Keep a fast repeated stress section as protection against emitter-tree and
+	# completed-Tween lifetime regressions that may only appear after many runs.
 	table.reduced_motion = true
 	table.animation_speed_scale = 40.0
 	for attempt in range(8):

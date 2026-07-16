@@ -26,6 +26,10 @@ BLOCKING_TESTS: tuple[tuple[str, str], ...] = (
     ("res://tests/dive_ui_flow_test.gd", "DIVE UI FLOW TEST PASS"),
     ("res://tests/npc_social_system_test.gd", "NPC SOCIAL SYSTEM TEST PASS"),
     ("res://tests/npc_social_ui_test.gd", "NPC SOCIAL UI TEST PASS"),
+    (
+        "res://tests/collection_progression_test.gd",
+        "COLLECTION PROGRESSION TEST PASS",
+    ),
     ("res://tests/smoke_test.gd", "SMOKE TEST PASS"),
     (
         "res://tests/poker_state_machine_stress_test.gd",

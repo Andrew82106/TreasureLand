@@ -1,6 +1,7 @@
 extends Control
 
 signal closed
+signal collection_requested
 
 const MaterialAtlas = preload("res://assets/art/shop_material_atlas_v1.png")
 const CreationAtlas = preload("res://assets/art/synthesis_collection_atlas_v1.png")
@@ -76,6 +77,25 @@ func open() -> void:
 	_rebuild()
 
 
+func open_with_item(item_id: String, side: String = "left") -> void:
+	if not game.is_discovered(item_id):
+		open()
+		return
+	if side == "right":
+		right_id = item_id
+	else:
+		left_id = item_id
+	open()
+
+
+func open_with_pair(left_item_id: String, right_item_id: String) -> void:
+	if game.is_discovered(left_item_id):
+		left_id = left_item_id
+	if game.is_discovered(right_item_id):
+		right_id = right_item_id
+	open()
+
+
 func request_close() -> void:
 	if graph_overlay != null and is_instance_valid(graph_overlay) and graph_overlay.visible:
 		graph_overlay.visible = false
@@ -86,12 +106,19 @@ func request_close() -> void:
 	closed.emit()
 
 
+func request_collection() -> void:
+	if busy:
+		return
+	visible = false
+	collection_requested.emit()
+
+
 func _rebuild() -> void:
 	presentation_generation += 1
-	if presentation_tween != null and presentation_tween.is_valid():
+	if presentation_tween != null and presentation_tween.is_valid() and presentation_tween.is_running():
 		presentation_tween.kill()
 	presentation_tween = null
-	if center_pulse_tween != null and center_pulse_tween.is_valid():
+	if center_pulse_tween != null and center_pulse_tween.is_valid() and center_pulse_tween.is_running():
 		center_pulse_tween.kill()
 	center_pulse_tween = null
 	motion_layer = null
@@ -208,9 +235,7 @@ func _build_header() -> PanelContainer:
 	tier_label.custom_minimum_size.x = 330
 	tier_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	row.add_child(tier_label)
-	var collection_label := _label("图鉴 %d/%d" % [game.discovered_item_ids().size(), game.ITEMS.size()], Color("f0d27e"), 17)
-	collection_label.autowrap_mode = TextServer.AUTOWRAP_OFF
-	row.add_child(collection_label)
+	row.add_child(_button("图鉴 %d/%d" % [game.discovered_item_ids().size(), game.ITEMS.size()], request_collection, false, 104))
 	var cash_label := _label("%d金贝" % game.cash, Color("8ee0b1"), 18)
 	cash_label.autowrap_mode = TextServer.AUTOWRAP_OFF
 	row.add_child(cash_label)
@@ -413,7 +438,11 @@ func _stage_status_text() -> String:
 		if not bool(last_result.get("ok", false)):
 			return str(last_result.get("text", "实验未能开始。"))
 		if bool(last_result.get("success", false)):
-			return "%s · %s\n%s" % [str(last_result.get("relation", "稳定关系")), str(last_result.get("text", "发现新的万物。")), str(last_result.get("logic", ""))]
+			var tower_text := ""
+			var tower_unlocks: Array = last_result.get("tower_unlocks", [])
+			if not tower_unlocks.is_empty():
+				tower_text = "\n万象塔点亮：%s" % "、".join(tower_unlocks)
+			return "%s · %s\n%s%s" % [str(last_result.get("relation", "稳定关系")), str(last_result.get("text", "发现新的万物。")), str(last_result.get("logic", "")), tower_text]
 		return "%s\n%s\n%s" % [str(last_result.get("failure_title", "没有形成稳定关系")), str(last_result.get("failure_reason", "")), str(last_result.get("suggestion", ""))]
 	if left_id.is_empty() or right_id.is_empty():
 		return "从左右图鉴各选择一个万物。"
@@ -443,8 +472,12 @@ func _build_footer() -> PanelContainer:
 	panel.add_child(row)
 	var copy := VBoxContainer.new()
 	copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	copy.add_child(_label("谱系推进", Color("f0d27e"), 17))
-	copy.add_child(_label(_recent_progress_text(), Color("b9d3cf"), 14))
+	var goal: Dictionary = game.synthesis_goal()
+	copy.add_child(_label("当前目标 · %s" % str(goal.get("title", "谱系推进")), Color("f0d27e"), 17))
+	copy.add_child(_label("%s%s" % [
+		str(goal.get("description", _recent_progress_text())),
+		(" · 可从%s继续推导" % str(goal.get("anchor_name", ""))) if not str(goal.get("anchor_name", "")).is_empty() else ""
+	], Color("b9d3cf"), 14))
 	row.add_child(copy)
 	var visible_relations: int = int(game.count_untried_visible_pairs())
 	var relation_count := _label("当前可推导的新关系 %d 条" % visible_relations, Color("8ee0b1"), 17)
@@ -615,18 +648,19 @@ func _play_synthesis_presentation(
 	if right_input_card != null and is_instance_valid(right_input_card):
 		right_input_card.modulate.a = 0.26
 	var approach_duration := _animation_duration(0.34 if not reduced_motion else 0.16)
-	presentation_tween = create_tween().bind_node(self).set_parallel(true)
-	presentation_tween.tween_method(
+	var approach_tween := create_tween().bind_node(self).set_parallel(true)
+	presentation_tween = approach_tween
+	approach_tween.tween_method(
 		_set_motion_arc.bind(left_proxy, left_start, basin_center + Vector2(-22.0, 0.0), -38.0),
 		0.0, 1.0, approach_duration
 	).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
-	presentation_tween.tween_method(
+	approach_tween.tween_method(
 		_set_motion_arc.bind(right_proxy, right_start, basin_center + Vector2(22.0, 0.0), 38.0),
 		0.0, 1.0, approach_duration
 	).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
-	presentation_tween.tween_property(left_proxy, "scale", Vector2(0.64, 0.64), approach_duration).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
-	presentation_tween.tween_property(right_proxy, "scale", Vector2(0.64, 0.64), approach_duration).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
-	await presentation_tween.finished
+	approach_tween.tween_property(left_proxy, "scale", Vector2(0.64, 0.64), approach_duration).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	approach_tween.tween_property(right_proxy, "scale", Vector2(0.64, 0.64), approach_duration).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	await _finish_presentation_tween(approach_tween)
 	if not _presentation_alive(generation):
 		return
 	var successful := bool(result.get("ok", false)) and bool(result.get("success", false))
@@ -649,11 +683,12 @@ func _play_synthesis_presentation(
 	var is_repeat := bool(result.get("repeat", false))
 	var effect_duration := 0.40 if is_repeat else (0.64 if successful else 0.50)
 	effect_duration = _animation_duration(effect_duration if not reduced_motion else 0.24)
-	presentation_tween = create_tween().bind_node(self).set_parallel(true)
-	presentation_tween.tween_property(effect, "progress", 1.0, effect_duration).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
-	presentation_tween.tween_property(left_proxy, "modulate:a", 0.0, effect_duration * 0.52).set_delay(effect_duration * 0.28)
-	presentation_tween.tween_property(right_proxy, "modulate:a", 0.0, effect_duration * 0.52).set_delay(effect_duration * 0.28)
-	await presentation_tween.finished
+	var relation_tween := create_tween().bind_node(self).set_parallel(true)
+	presentation_tween = relation_tween
+	relation_tween.tween_property(effect, "progress", 1.0, effect_duration).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+	relation_tween.tween_property(left_proxy, "modulate:a", 0.0, effect_duration * 0.52).set_delay(effect_duration * 0.28)
+	relation_tween.tween_property(right_proxy, "modulate:a", 0.0, effect_duration * 0.52).set_delay(effect_duration * 0.28)
+	await _finish_presentation_tween(relation_tween)
 	if not _presentation_alive(generation):
 		return
 	left_proxy.queue_free()
@@ -674,11 +709,12 @@ func _reveal_synthesis_result(generation: int, output_id: String, first_discover
 	result_card.scale = Vector2(0.34, 0.34)
 	result_card.modulate.a = 0.0
 	var duration := _animation_duration(0.24 if is_repeat else (0.38 if not reduced_motion else 0.20))
-	presentation_tween = create_tween().bind_node(self).set_parallel(true)
-	presentation_tween.tween_property(result_card, "scale", Vector2.ONE, duration).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	presentation_tween.tween_property(result_card, "modulate:a", 1.0, duration * 0.72)
-	presentation_tween.tween_property(result_card, "position:y", result_card.position.y - 6.0, duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	await presentation_tween.finished
+	var reveal_tween := create_tween().bind_node(self).set_parallel(true)
+	presentation_tween = reveal_tween
+	reveal_tween.tween_property(result_card, "scale", Vector2.ONE, duration).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	reveal_tween.tween_property(result_card, "modulate:a", 1.0, duration * 0.72)
+	reveal_tween.tween_property(result_card, "position:y", result_card.position.y - 6.0, duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	await _finish_presentation_tween(reveal_tween)
 	if not _presentation_alive(generation):
 		return
 	if status_label != null and is_instance_valid(status_label):
@@ -712,10 +748,11 @@ func _reveal_unstable_result(generation: int, result: Dictionary) -> void:
 	copy.add_child(hint)
 	motion_layer.add_child(badge)
 	var duration := _animation_duration(0.28 if not reduced_motion else 0.16)
-	presentation_tween = create_tween().bind_node(self).set_parallel(true)
-	presentation_tween.tween_property(badge, "scale", Vector2.ONE, duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	presentation_tween.tween_property(badge, "modulate:a", 1.0, duration)
-	await presentation_tween.finished
+	var reveal_tween := create_tween().bind_node(self).set_parallel(true)
+	presentation_tween = reveal_tween
+	reveal_tween.tween_property(badge, "scale", Vector2.ONE, duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	reveal_tween.tween_property(badge, "modulate:a", 1.0, duration)
+	await _finish_presentation_tween(reveal_tween)
 	if not _presentation_alive(generation):
 		return
 	if status_label != null and is_instance_valid(status_label):
@@ -778,6 +815,18 @@ func _animation_duration(base_duration: float) -> float:
 	return base_duration / maxf(0.1, animation_speed_scale)
 
 
+func _finish_presentation_tween(tween: Tween) -> void:
+	# Awaiting Tween.finished resumes inside the signal emission. Dropping the
+	# last reference or replacing the member there can free the Tween from its
+	# own callback and crash Godot 4.7. Cross one full frame before releasing it.
+	await tween.finished
+	if not is_inside_tree():
+		return
+	await get_tree().process_frame
+	if presentation_tween == tween:
+		presentation_tween = null
+
+
 func _presentation_alive(generation: int) -> bool:
 	return generation == presentation_generation and is_inside_tree() and visible
 
@@ -788,7 +837,7 @@ func _pulse_center(strong: bool = false) -> void:
 	center_stage.pivot_offset = center_stage.size * 0.5
 	center_stage.scale = Vector2(0.985, 0.985) if strong else Vector2(0.994, 0.994)
 	center_stage.modulate = Color("fff2b8") if strong else Color("d9f6ed")
-	if center_pulse_tween != null and center_pulse_tween.is_valid():
+	if center_pulse_tween != null and center_pulse_tween.is_valid() and center_pulse_tween.is_running():
 		center_pulse_tween.kill()
 	center_pulse_tween = create_tween().set_parallel(true)
 	center_pulse_tween.tween_property(center_stage, "scale", Vector2.ONE, 0.28 if strong else 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
