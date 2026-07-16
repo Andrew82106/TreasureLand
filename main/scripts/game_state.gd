@@ -58,6 +58,20 @@ const RACE_TOP3_PROBABILITIES := {
 	"强风": [0.34825, 0.31801, 0.04871, 0.46015, 0.20703, 0.67641, 0.11857, 0.82287]
 }
 const RACE_TARGET_RETURN := 0.88
+const RACE_EVENT_TIDES := [3, 7, 11, 15]
+const RACE_EVENT_NAMES := ["晨风试走", "日照巡场", "暮潮争流", "夜灯终驰"]
+const RACE_NPC_BETTORS := [
+	{"name": "阿葵", "style": "骑师观察", "ticket": "独胜"},
+	{"name": "米娅", "style": "公开报道", "ticket": "入席"},
+	{"name": "老乔", "style": "稳健近况", "ticket": "入席"},
+	{"name": "阿拓", "style": "赔率逆向", "ticket": "独胜"},
+	{"name": "榕奶奶", "style": "场地经验", "ticket": "入席"},
+	{"name": "洛沙", "style": "偏爱冷门", "ticket": "独胜"},
+	{"name": "港口搬运工", "style": "跟随热门", "ticket": "独胜"},
+	{"name": "报童阿澜", "style": "天气判断", "ticket": "入席"},
+	{"name": "巡岸员禾叔", "style": "稳定优先", "ticket": "入席"},
+	{"name": "风铃摊主", "style": "冲刺优先", "ticket": "独胜"}
+]
 
 const DAILY_FISHING_LIMIT := 3
 const TIME_SPEED_SECONDS := {"紧凑": 90.0, "标准": 120.0, "悠闲": 150.0}
@@ -66,7 +80,7 @@ const TIME_STATE_UI := "ui_paused"
 const TIME_STATE_ACTIVITY := "activity_snapshot"
 const TIME_STATE_FAST_FORWARD := "fast_forward"
 const TIME_STATE_DAY_END := "day_end_hold"
-const SAVE_VERSION := 3
+const SAVE_VERSION := 4
 const MANUAL_SAVE_PATH := "user://saves/manual_save.json"
 const POKER_TIERS := [
 	{"name": "潮边小桌", "buy_in": 80, "wealth_required": 0, "small_blind": 1, "big_blind": 2, "description": "认识规则与人物，输赢幅度较小"},
@@ -133,6 +147,9 @@ var npc_deep_talk_days := {}
 var npc_talk_counts := {}
 var npc_memory_rewarded := {}
 var free_race_ticket: int = 1
+var race_events: Array = []
+var race_history: Array = []
+var race_event_sequence: int = 0
 var fishing_attempts_today: int = 0
 var dive_windows_remaining: int = DAILY_FISHING_LIMIT
 var dive_scene_seed: int = 0
@@ -192,6 +209,7 @@ func _init() -> void:
 	_initialize_discovery_records()
 	_sync_tower_milestones(false)
 	_generate_daily_schedule()
+	_initialize_race_day()
 	_initialize_fish_market()
 	_load_recent_oracle_records()
 	_record_wealth("来到万物之岛", true)
@@ -241,6 +259,9 @@ func build_save_data(world_state: Dictionary = {}) -> Dictionary:
 			"npc_talk_counts": npc_talk_counts.duplicate(true),
 			"npc_memory_rewarded": npc_memory_rewarded.duplicate(true),
 			"free_race_ticket": free_race_ticket,
+			"race_events": race_events.duplicate(true),
+			"race_history": race_history.duplicate(true),
+			"race_event_sequence": race_event_sequence,
 			"fishing_attempts_today": fishing_attempts_today,
 			"dive_windows_remaining": dive_windows_remaining,
 			"dive_scene_seed": str(dive_scene_seed),
@@ -388,6 +409,9 @@ func restore_save_data(data: Dictionary) -> Dictionary:
 	npc_talk_counts = saved.get("npc_talk_counts", {}).duplicate(true)
 	npc_memory_rewarded = saved.get("npc_memory_rewarded", {}).duplicate(true)
 	free_race_ticket = maxi(0, int(saved.get("free_race_ticket", 0)))
+	race_events = saved.get("race_events", []).duplicate(true)
+	race_history = saved.get("race_history", []).duplicate(true)
+	race_event_sequence = maxi(0, int(saved.get("race_event_sequence", race_history.size())))
 	fishing_attempts_today = clampi(int(saved.get("fishing_attempts_today", 0)), 0, DAILY_FISHING_LIMIT)
 	dive_windows_remaining = clampi(int(saved.get("dive_windows_remaining", DAILY_FISHING_LIMIT - fishing_attempts_today)), 0, DAILY_FISHING_LIMIT)
 	fishing_attempts_today = DAILY_FISHING_LIMIT - dive_windows_remaining
@@ -440,6 +464,8 @@ func restore_save_data(data: Dictionary) -> Dictionary:
 	time_pause_reasons.clear()
 	if daily_schedule.is_empty():
 		_generate_daily_schedule()
+	if race_events.is_empty() or int(race_events[0].get("day", 0)) != day:
+		_initialize_race_day()
 	if fish_market_quotes.is_empty():
 		_initialize_fish_market()
 	time_state = TIME_STATE_DAY_END if day_end_pending else TIME_STATE_WORLD
@@ -457,7 +483,7 @@ func _validate_save_data(data: Dictionary) -> Dictionary:
 	for key in ["daily_schedule", "discovered", "discovery_records", "tower_milestones", "attempted_pairs", "relationships", "memories", "known_npcs", "npc_topic_reads", "npc_request_states", "npc_shared_creations", "npc_shared_fish", "npc_deep_talk_days", "npc_talk_counts", "npc_memory_rewarded", "dive_state", "marine_discoveries", "marine_size_records", "fish_market_quotes", "fish_market_stock", "fish_market_demand", "fish_market_reasons", "processed_fish_sales", "dive_equipment", "last_dive_result"]:
 		if saved.has(key) and not saved[key] is Dictionary:
 			return {"ok": false, "text": "存档字段%s损坏，未修改当前进度。" % key}
-	for key in ["time_event_log", "recent_synthesis_pairs", "wealth_history", "poker_npc_wallets", "poker_npc_brought", "poker_npc_present", "fish_catch_inventory", "fish_market_orders", "fish_market_history", "fish_market_transactions"]:
+	for key in ["time_event_log", "recent_synthesis_pairs", "wealth_history", "poker_npc_wallets", "poker_npc_brought", "poker_npc_present", "race_events", "race_history", "fish_catch_inventory", "fish_market_orders", "fish_market_history", "fish_market_transactions"]:
 		if saved.has(key) and not saved[key] is Array:
 			return {"ok": false, "text": "存档字段%s损坏，未修改当前进度。" % key}
 	return {"ok": true}
@@ -752,6 +778,7 @@ func refresh_day() -> void:
 	weather = weathers[day_rng.randi_range(0, weathers.size() - 1)]
 	wind_direction = winds[day_rng.randi_range(0, winds.size() - 1)]
 	_generate_daily_schedule()
+	_initialize_race_day()
 	_initialize_fish_market()
 	changed.emit()
 
@@ -2609,6 +2636,311 @@ func _record_poker_social_memories(outcome: String, bank_net: int) -> void:
 		})
 
 
+func _initialize_race_day() -> void:
+	race_events.clear()
+	for slot_index in range(RACE_EVENT_TIDES.size()):
+		race_events.append(_build_race_event(slot_index))
+	var event_ids: Array[String] = []
+	for raw_event in race_events:
+		event_ids.append(str(raw_event.get("event_id", "")))
+	daily_schedule["race_event_ids"] = event_ids
+
+
+func _build_race_event(slot_index: int) -> Dictionary:
+	var event_seed := posmod(daily_seed, 2147483647) ^ ((slot_index + 11) * 32452843) ^ ((day + 17) * 49979687)
+	var event_rng := RandomNumberGenerator.new()
+	event_rng.seed = event_seed
+	var roster: Array = []
+	for beast_index in range(RACE_BEASTS.size()):
+		var beast: Dictionary = RACE_BEASTS[beast_index]
+		var recent_places := race_beast_recent_places(str(beast["id"]), 3)
+		var form_value := int(beast["form"])
+		var condition := "状态平稳"
+		if form_value >= 7:
+			condition = "近况火热"
+		elif form_value >= 3:
+			condition = "近况上扬"
+		elif form_value <= -5:
+			condition = "等待反弹"
+		var strongest := "速度"
+		var strongest_value := int(beast["speed"])
+		for key in ["stamina", "burst", "stability"]:
+			if int(beast[key]) > strongest_value:
+				strongest = {"stamina": "耐力", "burst": "爆发", "stability": "稳定"}[key]
+				strongest_value = int(beast[key])
+		roster.append({
+			"index": beast_index,
+			"id": str(beast["id"]),
+			"name": str(beast["name"]),
+			"condition": condition,
+			"form": form_value,
+			"strongest": strongest,
+			"recent_places": recent_places
+		})
+	var initial_pool := {"独胜": [], "入席": []}
+	for ticket_type in ["独胜", "入席"]:
+		var probabilities := _race_probabilities(ticket_type, weather)
+		var weight_sum := 0.0
+		var weights: Array[float] = []
+		for probability in probabilities:
+			var noisy_weight := maxf(0.001, float(probability) * event_rng.randf_range(0.86, 1.14))
+			weights.append(noisy_weight)
+			weight_sum += noisy_weight
+		var pool_total := 560 + slot_index * 180 + event_rng.randi_range(-40, 80)
+		var amounts: Array[int] = []
+		for weight in weights:
+			amounts.append(maxi(2, int(round(float(pool_total) * weight / maxf(0.001, weight_sum)))))
+		initial_pool[ticket_type] = amounts
+	var named_tickets: Array = []
+	for bettor_index in range(RACE_NPC_BETTORS.size()):
+		var bettor: Dictionary = RACE_NPC_BETTORS[bettor_index]
+		var ticket_type := str(bettor["ticket"])
+		var choice := _pick_race_beast_for_style(event_rng, ticket_type, str(bettor["style"]))
+		var stake := event_rng.randi_range(8, 22) + slot_index * event_rng.randi_range(1, 4)
+		named_tickets.append({
+			"name": str(bettor["name"]),
+			"style": str(bettor["style"]),
+			"ticket": ticket_type,
+			"beast_index": choice,
+			"beast_id": str(RACE_BEASTS[choice]["id"]),
+			"beast_name": str(RACE_BEASTS[choice]["name"]),
+			"stake": stake,
+			"timing": "开盘"
+		})
+		_race_pool_add(initial_pool, ticket_type, choice, stake)
+	return {
+		"event_id": "race-d%03d-s%d" % [day, slot_index + 1],
+		"day": day,
+		"slot": slot_index,
+		"name": RACE_EVENT_NAMES[slot_index],
+		"scheduled_tide": int(RACE_EVENT_TIDES[slot_index]),
+		"weather": weather,
+		"wind": wind_direction,
+		"course_note": _race_course_note(slot_index),
+		"seed": str(event_seed),
+		"roster": roster,
+		"initial_pool": initial_pool,
+		"named_tickets": named_tickets,
+		"completed": false,
+		"sealed_snapshot": {},
+		"result_summary": {}
+	}
+
+
+func _race_course_note(slot_index: int) -> String:
+	var notes := [
+		"晨露尚重，起步与稳定更容易被看见。",
+		"日照充足，巡航段最能拉开持续速度。",
+		"暮潮漫过弯道，地形适性会成为公开焦点。",
+		"夜灯照亮终段，爆发与耐力的取舍最鲜明。"
+	]
+	var wind_note: String = {
+		"顺风": "今日顺风沿直道推进。",
+		"侧风": "今日侧风会考验路线保持。",
+		"逆风": "今日逆风让后程维持更重要。"
+	}.get(wind_direction, "")
+	return "%s%s" % [notes[clampi(slot_index, 0, notes.size() - 1)], wind_note]
+
+
+func _race_probabilities(ticket_type: String, weather_value: String) -> Array:
+	var weather_key := weather_value if RACE_WIN_PROBABILITIES.has(weather_value) else "晴"
+	return (RACE_TOP3_PROBABILITIES[weather_key] if ticket_type == "入席" else RACE_WIN_PROBABILITIES[weather_key]).duplicate()
+
+
+func _pick_race_beast_for_style(local_rng: RandomNumberGenerator, ticket_type: String, style: String) -> int:
+	var probabilities := _race_probabilities(ticket_type, weather)
+	var weights: Array[float] = []
+	var total := 0.0
+	for index in range(RACE_BEASTS.size()):
+		var beast: Dictionary = RACE_BEASTS[index]
+		var probability := maxf(0.001, float(probabilities[index]))
+		var weight := probability
+		match style:
+			"偏爱冷门":
+				weight = sqrt(probability)
+			"跟随热门":
+				weight = probability * probability
+			"稳定优先":
+				weight *= 0.55 + float(beast["stability"]) / 100.0
+			"冲刺优先":
+				weight *= 0.55 + float(beast["burst"]) / 100.0
+			"场地经验", "天气判断":
+				weight *= 0.55 + float(beast["course"]) / 100.0
+			"稳健近况":
+				weight *= 0.75 + float(beast["stamina"] + beast["stability"]) / 200.0
+			"骑师观察":
+				weight *= 0.55 + float(beast["rider"]) / 100.0
+			"赔率逆向":
+				weight = pow(probability, 0.72)
+		weight *= local_rng.randf_range(0.88, 1.12)
+		weights.append(weight)
+		total += weight
+	var roll := local_rng.randf() * maxf(0.001, total)
+	for index in range(weights.size()):
+		roll -= weights[index]
+		if roll <= 0.0:
+			return index
+	return weights.size() - 1
+
+
+func _race_pool_add(pool: Dictionary, ticket_type: String, beast_index: int, amount: int) -> void:
+	if not pool.has(ticket_type) or not pool[ticket_type] is Array:
+		pool[ticket_type] = []
+	var amounts: Array = pool[ticket_type]
+	while amounts.size() < RACE_BEASTS.size():
+		amounts.append(0)
+	amounts[beast_index] = int(amounts[beast_index]) + maxi(0, amount)
+	pool[ticket_type] = amounts
+
+
+func race_event_by_id(event_id: String) -> Dictionary:
+	for raw_event in race_events:
+		var event: Dictionary = raw_event
+		if str(event.get("event_id", "")) == event_id:
+			return event.duplicate(true)
+	return {}
+
+
+func _race_event_index(event_id: String) -> int:
+	for index in range(race_events.size()):
+		if str(race_events[index].get("event_id", "")) == event_id:
+			return index
+	return -1
+
+
+func race_schedule_rows() -> Array:
+	var current_slot := clampi(int((tide - 1) / 4), 0, RACE_EVENT_TIDES.size() - 1)
+	var rows: Array = []
+	for raw_event in race_events:
+		var event: Dictionary = raw_event
+		var slot_index := int(event["slot"])
+		var status := "预告"
+		if bool(event.get("completed", false)):
+			status = "已完赛"
+		elif day_end_pending:
+			status = "已错过"
+		elif slot_index < current_slot:
+			status = "已错过"
+		elif slot_index == current_slot:
+			status = "本时段开放"
+		var row := event.duplicate(true)
+		row["status"] = status
+		row["active"] = status == "本时段开放"
+		rows.append(row)
+	return rows
+
+
+func current_race_event() -> Dictionary:
+	if day_end_pending:
+		return {}
+	var current_slot := clampi(int((tide - 1) / 4), 0, RACE_EVENT_TIDES.size() - 1)
+	if current_slot < 0 or current_slot >= race_events.size():
+		return {}
+	var event: Dictionary = race_events[current_slot]
+	if bool(event.get("completed", false)):
+		return {}
+	return event.duplicate(true)
+
+
+func next_race_event() -> Dictionary:
+	var current_slot := clampi(int((tide - 1) / 4), 0, RACE_EVENT_TIDES.size() - 1)
+	for slot_index in range(current_slot + 1, race_events.size()):
+		var event: Dictionary = race_events[slot_index]
+		if not bool(event.get("completed", false)):
+			return event.duplicate(true)
+	return {}
+
+
+func tides_until_next_race() -> float:
+	if not current_race_event().is_empty():
+		return 0.0
+	var next_event := next_race_event()
+	if next_event.is_empty():
+		return -1.0
+	var target_tide := int(next_event["slot"]) * 4 + 1
+	return maxf(0.0, float(target_tide - tide) - tide_progress)
+
+
+func race_beast_recent_places(beast_id: String, limit: int = 5) -> Array[int]:
+	var result: Array[int] = []
+	for history_index in range(race_history.size() - 1, -1, -1):
+		var entry: Dictionary = race_history[history_index]
+		for raw_result in entry.get("results", []):
+			var result_entry: Dictionary = raw_result
+			if str(result_entry.get("id", "")) == beast_id:
+				result.append(int(result_entry.get("place", 0)))
+				break
+		if result.size() >= limit:
+			break
+	return result
+
+
+func race_beast_history_text(beast_id: String) -> String:
+	var places := race_beast_recent_places(beast_id, 3)
+	if places.is_empty():
+		return "暂无岛上正式赛绩"
+	var labels: Array[String] = []
+	for place in places:
+		labels.append("第%d" % place)
+	return "近%d场 %s" % [places.size(), " / ".join(labels)]
+
+
+func race_event_odds(event: Dictionary, beast_index: int, ticket_type: String, pool_key: String = "initial_pool") -> float:
+	if beast_index < 0 or beast_index >= RACE_BEASTS.size():
+		return 1.0
+	var probabilities := _race_probabilities(ticket_type, str(event.get("weather", weather)))
+	var probability := maxf(0.00001, float(probabilities[beast_index]))
+	var reference_odds := RACE_TARGET_RETURN / probability
+	var pool: Dictionary = event.get(pool_key, event.get("initial_pool", {}))
+	var amounts: Array = pool.get(ticket_type, [])
+	if amounts.size() != RACE_BEASTS.size():
+		return clampf(reference_odds, 1.01, minf(20.0, 0.95 / probability))
+	var total := 0.0
+	for amount in amounts:
+		total += maxf(0.0, float(amount))
+	var selected_share := maxf(0.00001, float(amounts[beast_index]) / maxf(1.0, total))
+	var probability_sum := 0.0
+	for value in probabilities:
+		probability_sum += float(value)
+	var expected_share := probability / maxf(0.00001, probability_sum)
+	var sentiment_multiplier := clampf(expected_share / selected_share, 0.78, 1.22)
+	return clampf(reference_odds * sentiment_multiplier, 1.01, minf(20.0, 0.95 / probability))
+
+
+func race_pool_summary(event: Dictionary, ticket_type: String = "独胜", pool_key: String = "initial_pool") -> Array:
+	var pool: Dictionary = event.get(pool_key, event.get("initial_pool", {}))
+	var amounts: Array = pool.get(ticket_type, [])
+	var total := 0
+	for amount in amounts:
+		total += int(amount)
+	var rows: Array = []
+	for beast_index in range(mini(amounts.size(), RACE_BEASTS.size())):
+		rows.append({
+			"beast_index": beast_index,
+			"beast_id": str(RACE_BEASTS[beast_index]["id"]),
+			"name": str(RACE_BEASTS[beast_index]["name"]),
+			"amount": int(amounts[beast_index]),
+			"share": float(amounts[beast_index]) / float(maxi(1, total)),
+			"odds": race_event_odds(event, beast_index, ticket_type, pool_key)
+		})
+	rows.sort_custom(func(a, b): return int(a["amount"]) > int(b["amount"]))
+	return rows
+
+
+func race_news_summary() -> Dictionary:
+	var active := current_race_event()
+	var latest: Dictionary = race_history[-1] if not race_history.is_empty() else {}
+	return {
+		"active_event": active,
+		"latest": latest,
+		"headline": (
+			"%s正在%s开放，%s。" % [str(active.get("name", "本时段赛事")), phase_name(), str(active.get("course_note", ""))]
+			if not active.is_empty()
+			else ("最近一场由%s夺魁。" % str(latest.get("winner_name", "尚无正式赛果")) if not latest.is_empty() else "本时段赛事已经结束，下一场将在新的时段开放。")
+		)
+	}
+
+
 func race_aids_available() -> Array[String]:
 	var result: Array[String] = []
 	for raw_id in RACE_AIDS.keys():
@@ -2619,7 +2951,7 @@ func race_aids_available() -> Array[String]:
 	return result
 
 
-func race_aid_info(aid_id: String, beast_index: int) -> Dictionary:
+func race_aid_info(aid_id: String, beast_index: int, event_id: String = "") -> Dictionary:
 	if aid_id.is_empty():
 		return {"ok": true, "id": "", "name": "不使用造物", "fee": 0, "description": "使用公开信息完成判断。", "insight": "本场不部署造物。"}
 	if not RACE_AIDS.has(aid_id) or not is_discovered(aid_id):
@@ -2628,14 +2960,16 @@ func race_aid_info(aid_id: String, beast_index: int) -> Dictionary:
 		return {"ok": false, "text": "请选择逐风兽。"}
 	var aid: Dictionary = RACE_AIDS[aid_id]
 	var beast: Dictionary = RACE_BEASTS[beast_index]
+	var event := race_event_by_id(event_id) if not event_id.is_empty() else current_race_event()
+	var event_weather := str(event.get("weather", weather))
 	var insight := ""
 	match aid_id:
 		"rain":
-			var modifier := _race_weather_modifier(beast)
+			var modifier := _race_weather_modifier(beast, event_weather)
 			var modifiers: Array[float] = []
 			for raw_beast in RACE_BEASTS:
-				modifiers.append(_race_weather_modifier(raw_beast))
-			insight = "%s在%s中的阶段修正为%+.2f，天气适应列第%d。" % [str(beast["name"]), weather, modifier, _descending_rank(modifier, modifiers)]
+				modifiers.append(_race_weather_modifier(raw_beast, event_weather))
+			insight = "%s在%s中的阶段修正为%+.2f，天气适应列第%d。" % [str(beast["name"]), event_weather, modifier, _descending_rank(modifier, modifiers)]
 		"thunderstorm":
 			var sigma := 12.0 - float(beast["stability"]) * 0.08
 			var sigmas: Array[float] = []
@@ -2677,10 +3011,11 @@ func _race_stage_bases(beast: Dictionary) -> Array[float]:
 	]
 
 
-func _race_weather_modifier(beast: Dictionary) -> float:
-	if weather == "阵雨":
+func _race_weather_modifier(beast: Dictionary, weather_value: String = "") -> float:
+	var weather_key := weather if weather_value.is_empty() else weather_value
+	if weather_key == "阵雨":
 		return (float(beast["course"]) - 70.0) * 0.12
-	if weather == "强风":
+	if weather_key == "强风":
 		return (float(beast["stability"]) - 70.0) * 0.12
 	return 0.0
 
@@ -2716,12 +3051,133 @@ func race_bet_cap(available_cash: int = -1) -> int:
 	return mini(spendable, mini(5000, wealth_cap))
 
 
-func run_race(beast_index: int, ticket_type: String, requested_bet: int, aid_id: String = "") -> Dictionary:
+func _seal_race_event(event: Dictionary, beast_index: int, ticket_type: String, stake: int) -> Dictionary:
+	var pool: Dictionary = event.get("initial_pool", {}).duplicate(true)
+	var current_odds := race_event_odds(event, beast_index, ticket_type, "initial_pool")
+	_race_pool_add(pool, ticket_type, beast_index, stake)
+	var late_rng := RandomNumberGenerator.new()
+	late_rng.seed = int(str(event.get("seed", "0"))) ^ ((beast_index + 5) * 15485863) ^ (ticket_type.hash() * 31)
+	var late_tickets: Array = []
+	var late_count := 6 + int(event.get("slot", 0))
+	for late_index in range(late_count):
+		var bettor: Dictionary = RACE_NPC_BETTORS[(late_index + int(event.get("slot", 0)) * 2) % RACE_NPC_BETTORS.size()]
+		var late_ticket := str(bettor["ticket"])
+		var choice := _pick_race_beast_for_style(late_rng, late_ticket, str(bettor["style"]))
+		var late_stake := late_rng.randi_range(10, 34) + int(event.get("slot", 0)) * 4
+		_race_pool_add(pool, late_ticket, choice, late_stake)
+		late_tickets.append({
+			"name": str(bettor["name"]),
+			"style": str(bettor["style"]),
+			"ticket": late_ticket,
+			"beast_index": choice,
+			"beast_id": str(RACE_BEASTS[choice]["id"]),
+			"beast_name": str(RACE_BEASTS[choice]["name"]),
+			"stake": late_stake,
+			"timing": "封盘前"
+		})
+	var sealed_event := event.duplicate(true)
+	sealed_event["sealed_pool"] = pool
+	var final_odds := race_event_odds(sealed_event, beast_index, ticket_type, "sealed_pool")
+	return {
+		"sealed_day": day,
+		"sealed_tide": tide,
+		"player_ticket": {
+			"beast_index": beast_index,
+			"beast_id": str(RACE_BEASTS[beast_index]["id"]),
+			"beast_name": str(RACE_BEASTS[beast_index]["name"]),
+			"ticket": ticket_type,
+			"stake": stake
+		},
+		"current_odds": current_odds,
+		"final_odds": final_odds,
+		"initial_pool": event.get("initial_pool", {}).duplicate(true),
+		"sealed_pool": pool,
+		"late_tickets": late_tickets
+	}
+
+
+func _simulate_race_event(event: Dictionary, selected_beast_index: int) -> Dictionary:
+	var race_rng := RandomNumberGenerator.new()
+	race_rng.seed = int(str(event.get("seed", "0")))
+	var event_weather := str(event.get("weather", weather))
+	var results: Array = []
+	for index in range(RACE_BEASTS.size()):
+		var beast: Dictionary = RACE_BEASTS[index]
+		var stability := float(beast["stability"])
+		var sigma := 12.0 - stability * 0.08
+		var stage_bases := _race_stage_bases(beast)
+		var weather_mod := _race_weather_modifier(beast, event_weather)
+		var score := float(beast["form"])
+		var stage_scores: Array[float] = []
+		for stage in range(4):
+			score += float(stage_bases[stage]) + weather_mod + race_rng.randfn(0.0, sigma)
+			stage_scores.append(score)
+		results.append({
+			"index": index,
+			"id": str(beast["id"]),
+			"name": str(beast["name"]),
+			"score": score,
+			"stage_scores": stage_scores
+		})
+	results.sort_custom(func(a, b): return float(a["score"]) > float(b["score"]))
+	for place_index in range(results.size()):
+		results[place_index]["place"] = place_index + 1
+	var stage_reports: Array = []
+	var stage_names := ["起步", "巡航", "地形", "冲刺"]
+	for stage in range(4):
+		var stage_order: Array = results.duplicate(true)
+		stage_order.sort_custom(func(a, b): return float(a["stage_scores"][stage]) > float(b["stage_scores"][stage]))
+		var selected_rank := 0
+		var order_names: Array[String] = []
+		var order_indices: Array[int] = []
+		for rank_index in range(stage_order.size()):
+			order_names.append(str(stage_order[rank_index]["name"]))
+			order_indices.append(int(stage_order[rank_index]["index"]))
+			if int(stage_order[rank_index]["index"]) == selected_beast_index:
+				selected_rank = rank_index + 1
+		stage_reports.append({
+			"stage": stage_names[stage],
+			"leader": str(stage_order[0]["name"]),
+			"selected_rank": selected_rank,
+			"order": order_names,
+			"order_indices": order_indices
+		})
+	var selected_place := 0
+	for result in results:
+		if int(result["index"]) == selected_beast_index:
+			selected_place = int(result["place"])
+			break
+	return {"results": results, "stage_reports": stage_reports, "place": selected_place}
+
+
+func run_race(
+	beast_index: int,
+	ticket_type: String,
+	requested_bet: int,
+	aid_id: String = "",
+	event_id: String = ""
+) -> Dictionary:
 	if beast_index < 0 or beast_index >= RACE_BEASTS.size():
 		return {"ok": false, "text": "请选择逐风兽。"}
 	if not ticket_types().has(ticket_type):
 		return {"ok": false, "text": "当前持有的金贝尚未解锁该票种。"}
-	var aid_info := race_aid_info(aid_id, beast_index)
+	var active_event := current_race_event()
+	if active_event.is_empty():
+		var next_event := next_race_event()
+		return {
+			"ok": false,
+			"text": "本时段赛事已经结束。%s" % (
+				"下一场%s将在第%d潮刻鸣钟。" % [str(next_event.get("name", "赛事")), int(next_event.get("scheduled_tide", 0))]
+				if not next_event.is_empty() else "今天已经没有未完成赛事。"
+			)
+		}
+	var event := active_event if event_id.is_empty() else race_event_by_id(event_id)
+	if event.is_empty() or str(event.get("event_id", "")) != str(active_event.get("event_id", "")):
+		return {"ok": false, "text": "这场赛事当前不在开放时段，未扣除金贝。"}
+	var event_index := _race_event_index(str(event["event_id"]))
+	if event_index < 0 or bool(event.get("completed", false)):
+		return {"ok": false, "text": "这场赛事已经封盘结算，不能重复购买祝胜券。"}
+	var aid_info := race_aid_info(aid_id, beast_index, str(event["event_id"]))
 	if not bool(aid_info.get("ok", false)):
 		return aid_info
 	var aid_fee := int(aid_info.get("fee", 0))
@@ -2733,6 +3189,7 @@ func run_race(beast_index: int, ticket_type: String, requested_bet: int, aid_id:
 	if not used_free and max_bet < 10:
 		return {"ok": false, "text": "支付辅助费后不足以购买最低10金贝祝胜券。"}
 	var stake := 10 if used_free else mini(max_bet, maxi(10, requested_bet))
+	var sealed_snapshot := _seal_race_event(event, beast_index, ticket_type, stake)
 	cash -= aid_fee
 	if used_free:
 		free_race_ticket -= 1
@@ -2740,47 +3197,52 @@ func run_race(beast_index: int, ticket_type: String, requested_bet: int, aid_id:
 		cash -= stake
 		locked_principal += stake
 
-	var results: Array = []
-	for index in range(RACE_BEASTS.size()):
-		var beast: Dictionary = RACE_BEASTS[index]
-		var stability := float(beast["stability"])
-		var sigma := 12.0 - stability * 0.08
-		var stage_bases := _race_stage_bases(beast)
-		var weather_mod := _race_weather_modifier(beast)
-		var score := float(beast["form"])
-		var stage_scores: Array[float] = []
-		for stage in range(4):
-			score += float(stage_bases[stage]) + weather_mod + rng.randfn(0.0, sigma)
-			stage_scores.append(score)
-		results.append({"index": index, "name": beast["name"], "score": score, "stage_scores": stage_scores})
-	results.sort_custom(func(a, b): return float(a["score"]) > float(b["score"]))
-	var stage_reports: Array = []
-	var stage_names := ["起步", "巡航", "地形", "冲刺"]
-	for stage in range(4):
-		var stage_order: Array = results.duplicate(true)
-		stage_order.sort_custom(func(a, b): return float(a["stage_scores"][stage]) > float(b["stage_scores"][stage]))
-		var selected_rank := 0
-		for rank_index in range(stage_order.size()):
-			if int(stage_order[rank_index]["index"]) == beast_index:
-				selected_rank = rank_index + 1
-				break
-		stage_reports.append({
-			"stage": stage_names[stage],
-			"leader": str(stage_order[0]["name"]),
-			"selected_rank": selected_rank
-		})
-
-	var place := 0
-	for index in range(results.size()):
-		if int(results[index]["index"]) == beast_index:
-			place = index + 1
-			break
+	var simulation := _simulate_race_event(event, beast_index)
+	var results: Array = simulation["results"]
+	var stage_reports: Array = simulation["stage_reports"]
+	var place := int(simulation["place"])
 	var won := place == 1 if ticket_type == "独胜" else place <= 3
-	var odds := race_odds(beast_index, ticket_type)
+	var odds := float(sealed_snapshot["final_odds"])
 	var payout := int(round(stake * odds)) if won else 0
 	if not used_free:
 		locked_principal = maxi(0, locked_principal - stake)
 	cash += payout
+	event["completed"] = true
+	event["sealed_snapshot"] = sealed_snapshot.duplicate(true)
+	event["result_summary"] = {
+		"winner_id": str(results[0]["id"]),
+		"winner_name": str(results[0]["name"]),
+		"selected_beast_id": str(RACE_BEASTS[beast_index]["id"]),
+		"selected_place": place,
+		"won": won
+	}
+	race_events[event_index] = event
+	race_event_sequence += 1
+	var history_entry := {
+		"history_id": "race-history-%05d" % race_event_sequence,
+		"event_id": str(event["event_id"]),
+		"day": int(event["day"]),
+		"scheduled_tide": int(event["scheduled_tide"]),
+		"name": str(event["name"]),
+		"weather": str(event["weather"]),
+		"wind": str(event["wind"]),
+		"course_note": str(event["course_note"]),
+		"winner_id": str(results[0]["id"]),
+		"winner_name": str(results[0]["name"]),
+		"results": results.duplicate(true),
+		"stage_reports": stage_reports.duplicate(true),
+		"player_ticket": sealed_snapshot["player_ticket"].duplicate(true),
+		"current_odds": float(sealed_snapshot["current_odds"]),
+		"final_odds": odds,
+		"won": won,
+		"payout": payout,
+		"net_cash": cash - cash_before,
+		"aid_id": aid_id,
+		"aid_name": str(aid_info.get("name", "不使用造物"))
+	}
+	race_history.append(history_entry)
+	while race_history.size() > 32:
+		race_history.pop_front()
 	advance_time(1)
 	_record_wealth("逐风竞速 · %s" % ("命中" if won else "未中"))
 	var selected_beast_id := str(RACE_BEASTS[beast_index]["id"])
@@ -2791,6 +3253,18 @@ func run_race(beast_index: int, ticket_type: String, requested_bet: int, aid_id:
 		"summary": "你在逐风竞速中选择支持%s，结果为第%d名。" % [str(RACE_BEASTS[beast_index]["name"]), place],
 		"relationship_delta": 2 if selected_beast_id == "cloudfin" else 0,
 		"effects": {"race_support": 2 if selected_beast_id == "cloudfin" else 1, "dialogue_warmth": 1}
+	})
+	var selected_probability := float(_race_probabilities(ticket_type, str(event["weather"]))[beast_index])
+	var upset := str(results[0]["id"]) == selected_beast_id and selected_probability < 0.10
+	add_npc_memory("mia", {
+		"memory_id": "race_report_%s" % str(event["event_id"]),
+		"type": "race_report",
+		"importance": 4 if upset or won else 2,
+		"summary": "%s由%s夺魁；你支持的%s最终第%d名，封盘赔率%.2f。" % [
+			str(event["name"]), str(results[0]["name"]), str(RACE_BEASTS[beast_index]["name"]), place, odds
+		],
+		"relationship_delta": 1 if upset else 0,
+		"effects": {"dialogue_warmth": 1, "private_topic_access": 1 if upset else 0}
 	})
 	changed.emit()
 	return {
@@ -2808,10 +3282,19 @@ func run_race(beast_index: int, ticket_type: String, requested_bet: int, aid_id:
 		"net_cash": cash - cash_before,
 		"free": used_free,
 		"odds": odds,
+		"current_odds": float(sealed_snapshot["current_odds"]),
+		"final_odds": odds,
+		"odds_shift": odds - float(sealed_snapshot["current_odds"]),
 		"bet_cap": max_bet,
 		"bet_was_capped": not used_free and requested_bet > max_bet,
 		"results": results,
 		"stage_reports": stage_reports,
+		"event": event.duplicate(true),
+		"event_id": str(event["event_id"]),
+		"event_name": str(event["name"]),
+		"initial_pool": sealed_snapshot["initial_pool"].duplicate(true),
+		"final_pool": sealed_snapshot["sealed_pool"].duplicate(true),
+		"late_tickets": sealed_snapshot["late_tickets"].duplicate(true),
 		"text": "%s获得第%d名。%s%s" % [
 			RACE_BEASTS[beast_index]["name"], place,
 			("返还%d金贝。" % payout) if won else "祝胜券未命中。",

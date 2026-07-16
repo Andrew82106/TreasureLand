@@ -6,6 +6,7 @@ const PokerTableScript = preload("res://scripts/poker_table.gd")
 const SynthesisTableScript = preload("res://scripts/synthesis_table.gd")
 const DiveTableScript = preload("res://scripts/dive_table.gd")
 const WealthChartScript = preload("res://scripts/wealth_chart.gd")
+const RaceReplayScript = preload("res://scripts/race_replay.gd")
 const WorldLayoutScript = preload("res://scripts/world_layout.gd")
 const MapOverviewScript = preload("res://scripts/map_overview.gd")
 const NpcCatalogScript = preload("res://scripts/npc_catalog.gd")
@@ -57,6 +58,8 @@ var race_ticket_option: OptionButton
 var race_aid_option: OptionButton
 var race_bet_spin: SpinBox
 var race_preview_label: Label
+var race_event_id: String = ""
+var race_replay: Control
 
 
 func _ready() -> void:
@@ -1082,6 +1085,12 @@ func _open_time_menu() -> void:
 		],
 		Color("d7ece7")
 	))
+	var race_lines: Array[String] = []
+	for raw_event in game.race_schedule_rows():
+		var event: Dictionary = raw_event
+		race_lines.append("%s 第%d潮刻 · %s" % [str(event["name"]), int(event["scheduled_tide"]), str(event["status"])])
+	modal_body.add_child(_make_text("今日逐风赛事\n• %s" % "\n• ".join(race_lines), Color("e8cb82")))
+	modal_body.add_child(_make_button("查看赛事票池", _open_race))
 	var speed_row := HBoxContainer.new()
 	speed_row.add_theme_constant_override("separation", 8)
 	for mode in ["紧凑", "标准", "悠闲"]:
@@ -1538,12 +1547,17 @@ func _open_news() -> void:
 				"" if bool(entry.get("available", false)) else "（当前不可交谈）"
 			], Color("bcd5d2")))
 		modal_body.add_child(HSeparator.new())
-	modal_body.add_child(_make_text("逐风竞速 · 八兽公开属性", Color("f0d27e")))
-	for index in range(game.RACE_BEASTS.size()):
-		var beast: Dictionary = game.RACE_BEASTS[index]
-		modal_body.add_child(_make_text("%s：速度%d / 耐力%d / 爆发%d / 稳定%d · 独胜参考 %.2f" % [
-			str(beast["name"]), int(beast["speed"]), int(beast["stamina"]), int(beast["burst"]), int(beast["stability"]), game.race_odds(index, "独胜")
-		]))
+	var race_news: Dictionary = game.race_news_summary()
+	modal_body.add_child(_make_text("逐风竞速 · 今日赛场", Color("f0d27e")))
+	modal_body.add_child(_make_text(str(race_news.get("headline", "今日赛事等待公开消息。")), Color("c7dcda")))
+	var latest_race: Dictionary = race_news.get("latest", {})
+	if not latest_race.is_empty():
+		modal_body.add_child(_make_text("最近赛果：%s · %s夺魁 · %s" % [
+			str(latest_race.get("name", "逐风赛事")),
+			str(latest_race.get("winner_name", "未知")),
+			"你的祝胜券命中" if bool(latest_race.get("won", false)) else "你的祝胜券未中"
+		], Color("9edfc4")))
+	modal_body.add_child(_make_button("查看今日赛程与票池", _open_race))
 
 
 func _open_tower() -> void:
@@ -1619,19 +1633,104 @@ func _on_poker_table_closed() -> void:
 
 
 func _open_race() -> void:
-	_open_modal("逐风竞速 · 八兽四段")
+	_open_modal("逐风竞速 · 今日四场")
 	modal_body.add_child(_art_banner(RaceBanner, 190.0))
-	modal_body.add_child(_make_text("每场依次经过起步、巡航、地形和冲刺四段。已发现造物可以在下注前提供额外情报；每场最多部署一个、只支付部署费、造物永久保留且不会暗改赛果。", Color("c9f6d8")))
+	modal_body.add_child(_make_text("每个时段只有一场正式赛事。阵容、天气与开盘票池已经锁定；购票后仍会有NPC在封盘前加入，当前赔率是预计返还，结算使用封盘赔率。造物只提供信息，不改变赛果、票池或随机种子。", Color("c9f6d8")))
+	var schedule := GridContainer.new()
+	schedule.columns = 2
+	schedule.add_theme_constant_override("h_separation", 8)
+	schedule.add_theme_constant_override("v_separation", 8)
+	modal_body.add_child(schedule)
+	for raw_event in game.race_schedule_rows():
+		var event: Dictionary = raw_event
+		var active: bool = bool(event.get("active", false))
+		var completed: bool = bool(event.get("completed", false))
+		var panel := PanelContainer.new()
+		panel.custom_minimum_size = Vector2(350, 112)
+		panel.add_theme_stylebox_override("panel", _panel_style(
+			Color("17343b"),
+			Color("e2c467") if active else (Color("72ad91") if completed else Color("50696d"))
+		))
+		var box := VBoxContainer.new()
+		panel.add_child(box)
+		box.add_child(_make_text("%s · 第%d潮刻" % [str(event["name"]), int(event["scheduled_tide"])], Color("f1d687") if active else Color("c3d0cd")))
+		box.add_child(_make_text("%s\n%s" % [str(event["status"]), str(event["weather"])], Color("8fe0b4") if active else Color("92a7a7")))
+		if completed:
+			box.add_child(_make_text("%s夺魁" % str(event.get("result_summary", {}).get("winner_name", "已完赛")), Color("9edfc4")))
+		schedule.add_child(panel)
+	var nav := HBoxContainer.new()
+	nav.add_theme_constant_override("separation", 8)
+	nav.add_child(_make_button("赛事历史", _open_race_history))
+	nav.add_child(_make_button("查看晨报", _open_news))
+	modal_body.add_child(nav)
+
+	var event: Dictionary = game.current_race_event()
+	if event.is_empty():
+		race_event_id = ""
+		var next_event: Dictionary = game.next_race_event()
+		if next_event.is_empty():
+			modal_body.add_child(_make_text("今天四场赛事均已结束或错过。回漂流小屋休息后，明日阵容、天气快照与票池会重新生成。", Color("e3c987")))
+		else:
+			var wait_amount: float = float(game.tides_until_next_race())
+			modal_body.add_child(_make_text("本时段赛事已经结束。下一场：%s · 第%d潮刻鸣钟；进入%s后开放购票。" % [
+				str(next_event["name"]), int(next_event["scheduled_tide"]),
+				["清晨", "白天", "傍晚", "夜晚"][int(next_event["slot"])]
+			], Color("e3c987")))
+			modal_body.add_child(_make_button("等待%.2f潮刻至下一场" % wait_amount, _wait_for_next_race.bind(wait_amount), wait_amount <= 0.0))
+		return
+
+	race_event_id = str(event["event_id"])
+	modal_body.add_child(_make_text("%s · %s · %s\n%s" % [
+		str(event["name"]), str(event["weather"]), str(event["wind"]), str(event["course_note"])
+	], Color("f0d27e")))
+	var roster_grid := GridContainer.new()
+	roster_grid.columns = 2
+	roster_grid.add_theme_constant_override("h_separation", 8)
+	roster_grid.add_theme_constant_override("v_separation", 8)
+	modal_body.add_child(roster_grid)
+	for beast_index in range(game.RACE_BEASTS.size()):
+		var beast: Dictionary = game.RACE_BEASTS[beast_index]
+		var roster_entry: Dictionary = event["roster"][beast_index]
+		var card := PanelContainer.new()
+		card.custom_minimum_size = Vector2(350, 145)
+		card.add_theme_stylebox_override("panel", _panel_style(Color("163139"), Color("55777b")))
+		var copy := VBoxContainer.new()
+		card.add_child(copy)
+		copy.add_child(_make_text("%d · %s · %s" % [beast_index + 1, str(beast["name"]), str(roster_entry["condition"])], Color("f1d687")))
+		copy.add_child(_make_text("速%d 耐%d 爆%d 稳%d\n%s · %s" % [
+			int(beast["speed"]), int(beast["stamina"]), int(beast["burst"]), int(beast["stability"]),
+			str(roster_entry["strongest"]), game.race_beast_history_text(str(beast["id"]))
+		], Color("b9cfcd")))
+		copy.add_child(_make_text("独胜预计 %.2f · 入席预计 %.2f" % [
+			game.race_event_odds(event, beast_index, "独胜"),
+			game.race_event_odds(event, beast_index, "入席")
+		], Color("8ed9ae")))
+		roster_grid.add_child(card)
+
+	var pool_rows: Array = game.race_pool_summary(event, "独胜")
+	var pool_lines: Array[String] = []
+	for pool_index in range(mini(3, pool_rows.size())):
+		var row: Dictionary = pool_rows[pool_index]
+		pool_lines.append("%s %d金贝（%.0f%%）" % [str(row["name"]), int(row["amount"]), float(row["share"]) * 100.0])
+	modal_body.add_child(_make_text("当前独胜票池支持前三：%s。票池只是岛民选择，不是胜负答案。" % " · ".join(pool_lines), Color("a9c7c4")))
+	var named_lines: Array[String] = []
+	for ticket_index in range(mini(5, event.get("named_tickets", []).size())):
+		var ticket: Dictionary = event["named_tickets"][ticket_index]
+		named_lines.append("%s：%s %s %d金贝（%s）" % [
+			str(ticket["name"]), str(ticket["ticket"]), str(ticket["beast_name"]), int(ticket["stake"]), str(ticket["style"])
+		])
+	modal_body.add_child(_make_text("公开购票观察\n• %s" % "\n• ".join(named_lines), Color("9dbbb8")))
+
 	race_beast_option = OptionButton.new()
 	for beast in game.RACE_BEASTS:
 		race_beast_option.add_item(str(beast["name"]))
-	race_beast_option.item_selected.connect(_update_race_preview)
+	race_beast_option.item_selected.connect(_update_race_preview, CONNECT_DEFERRED)
 	modal_body.add_child(_labeled_control("选择逐风兽", race_beast_option))
 
 	race_ticket_option = OptionButton.new()
 	for ticket_type in game.ticket_types():
 		race_ticket_option.add_item(ticket_type)
-	race_ticket_option.item_selected.connect(_update_race_preview)
+	race_ticket_option.item_selected.connect(_update_race_preview, CONNECT_DEFERRED)
 	modal_body.add_child(_labeled_control("祝胜券类型", race_ticket_option))
 
 	race_aid_option = OptionButton.new()
@@ -1641,7 +1740,7 @@ func _open_race() -> void:
 		var aid: Dictionary = game.RACE_AIDS[aid_id]
 		race_aid_option.add_item("%s · %d金贝" % [str(aid["name"]), int(aid["fee"])])
 		race_aid_option.set_item_metadata(race_aid_option.item_count - 1, aid_id)
-	race_aid_option.item_selected.connect(_update_race_preview)
+	race_aid_option.item_selected.connect(_update_race_preview, CONNECT_DEFERRED)
 	modal_body.add_child(_labeled_control("赛前造物", race_aid_option))
 
 	race_bet_spin = SpinBox.new()
@@ -1652,7 +1751,7 @@ func _open_race() -> void:
 	modal_body.add_child(_labeled_control("下注金贝", race_bet_spin))
 	race_preview_label = _make_text("")
 	modal_body.add_child(race_preview_label)
-	modal_body.add_child(_make_button("开始比赛", _run_race, game.free_race_ticket <= 0 and game.cash < 10))
+	modal_body.add_child(_make_button("确认购票并封盘", _run_race, game.free_race_ticket <= 0 and game.cash < 10))
 	_update_race_preview(0)
 
 
@@ -1673,11 +1772,21 @@ func _update_race_preview(_selected_index: int) -> void:
 	var ticket_type := race_ticket_option.get_item_text(race_ticket_option.selected)
 	var beast: Dictionary = game.RACE_BEASTS[beast_index]
 	var aid_id := str(race_aid_option.get_item_metadata(race_aid_option.selected))
-	var aid_info: Dictionary = game.race_aid_info(aid_id, beast_index)
+	var event: Dictionary = game.race_event_by_id(race_event_id)
+	if event.is_empty():
+		race_preview_label.text = "这场赛事当前不可购票。"
+		return
+	var aid_info: Dictionary = game.race_aid_info(aid_id, beast_index, race_event_id)
 	var free_text := "本场优先使用免费体验券（固定10金贝票面）" if game.free_race_ticket > 0 else "正式下注"
-	race_preview_label.text = "%s · 速度%d / 耐力%d / 爆发%d / 稳定%d\n%s · 当前参考赔率 %.2f · 本场最多投入%d金贝\n%s：%s" % [
+	var pool_row: Dictionary = {}
+	for raw_row in game.race_pool_summary(event, ticket_type):
+		if int(raw_row["beast_index"]) == beast_index:
+			pool_row = raw_row
+			break
+	var expected_odds: float = float(game.race_event_odds(event, beast_index, ticket_type))
+	race_preview_label.text = "%s · 速度%d / 耐力%d / 爆发%d / 稳定%d\n%s · 当前预计返还 %.2f倍 · 当前票池支持%.0f%% · 本场最多投入%d金贝\n封盘前赔率仍会随NPC购票变化；最终返还上限仍受真实概率约束。\n%s：%s" % [
 		str(beast["name"]), int(beast["speed"]), int(beast["stamina"]), int(beast["burst"]), int(beast["stability"]),
-		free_text, game.race_odds(beast_index, ticket_type), game.race_bet_cap(game.cash - int(aid_info.get("fee", 0))),
+		free_text, expected_odds, float(pool_row.get("share", 0.0)) * 100.0, game.race_bet_cap(game.cash - int(aid_info.get("fee", 0))),
 		str(aid_info.get("name", "公开信息")), str(aid_info.get("insight", "本场不部署造物。"))
 	]
 
@@ -1686,14 +1795,36 @@ func _run_race() -> void:
 	var beast_index := race_beast_option.selected
 	var ticket_type := race_ticket_option.get_item_text(race_ticket_option.selected)
 	var aid_id := str(race_aid_option.get_item_metadata(race_aid_option.selected))
-	var result: Dictionary = game.run_race(beast_index, ticket_type, int(race_bet_spin.value), aid_id)
-	_open_modal("逐风竞速 · 结算")
+	game.save_game("user://saves/activity_race.json", _world_save_state(), true)
+	var result: Dictionary = game.run_race(beast_index, ticket_type, int(race_bet_spin.value), aid_id, race_event_id)
+	_open_modal("逐风竞速 · 封盘与赛果")
 	modal_body.add_child(_art_banner(RaceBanner, 160.0))
 	modal_body.add_child(_make_text(str(result.get("text", "赛事未能开始。")), Color("fff2b0")))
 	if bool(result.get("ok", false)):
+		modal_body.add_child(_make_text("%s · 当前预计%.2f → 封盘%.2f（%+.2f）" % [
+			str(result.get("event_name", "逐风赛事")),
+			float(result.get("current_odds", 1.0)),
+			float(result.get("final_odds", 1.0)),
+			float(result.get("odds_shift", 0.0))
+		], Color("f0d27e")))
 		modal_body.add_child(_make_text("赛前造物：%s · 部署费%d金贝\n%s" % [str(result.get("aid_name", "不使用造物")), int(result.get("aid_fee", 0)), str(result.get("aid_insight", ""))], Color("9fe0ba")))
 		modal_body.add_child(_make_text("票面%d金贝 · 赔率%.2f · 派彩%d金贝 · 本场净变化%+d金贝 · 当前%d金贝" % [int(result.get("stake", 0)), float(result.get("odds", 1.0)), int(result.get("payout", 0)), int(result.get("net_cash", 0)), int(result.get("cash_after", game.cash))], Color("f0d27e")))
-		modal_body.add_child(_make_text("四段赛程回放", Color("f0d27e")))
+		modal_body.add_child(_make_text("四段赛程动态回放", Color("f0d27e")))
+		race_replay = RaceReplayScript.new()
+		modal_body.add_child(race_replay)
+		race_replay.setup(result, beast_index)
+		var replay_actions := HBoxContainer.new()
+		replay_actions.add_theme_constant_override("separation", 8)
+		replay_actions.add_child(_make_button("重新播放", race_replay.replay))
+		replay_actions.add_child(_make_button("跳到终点", race_replay.skip))
+		modal_body.add_child(replay_actions)
+		modal_body.add_child(_make_text("封盘前新增购票", Color("f0d27e")))
+		var late_lines: Array[String] = []
+		for late_index in range(mini(6, result.get("late_tickets", []).size())):
+			var ticket: Dictionary = result["late_tickets"][late_index]
+			late_lines.append("%s：%s %s %d金贝" % [str(ticket["name"]), str(ticket["ticket"]), str(ticket["beast_name"]), int(ticket["stake"])])
+		modal_body.add_child(_make_text("• %s" % "\n• ".join(late_lines), Color("9dbbb8")))
+		modal_body.add_child(_make_text("四段摘要", Color("f0d27e")))
 		var stages := HBoxContainer.new()
 		stages.add_theme_constant_override("separation", 8)
 		for raw_stage in result.get("stage_reports", []):
@@ -1719,6 +1850,45 @@ func _run_race() -> void:
 			ranking.append("%d. %s" % [index + 1, str(result["results"][index]["name"])])
 		modal_body.add_child(_make_text("完整排名\n%s" % "\n".join(ranking)))
 		modal_body.add_child(_make_button("再看一场", _open_race))
+		modal_body.add_child(_make_button("查看赛事历史", _open_race_history))
+	else:
+		modal_body.add_child(_make_button("返回今日赛程", _open_race))
+
+
+func _wait_for_next_race(amount: float) -> void:
+	if amount <= 0.0 or not game.fast_forward_time(amount, "等待下一场逐风赛事"):
+		_show_result("无法等待", "当前无法推进到下一场赛事。", _open_race)
+		return
+	_open_race()
+
+
+func _open_race_history() -> void:
+	_open_modal("逐风竞速 · 赛事历史")
+	modal_body.add_child(_art_banner(RaceBanner, 140.0))
+	if game.race_history.is_empty():
+		modal_body.add_child(_make_text("还没有完成正式赛事。每场封盘快照、四段顺序、完整排名和玩家票据都会保存在这里。", Color("a9c7c4")))
+	else:
+		for history_index in range(game.race_history.size() - 1, maxi(-1, game.race_history.size() - 13), -1):
+			var entry: Dictionary = game.race_history[history_index]
+			var card := PanelContainer.new()
+			card.add_theme_stylebox_override("panel", _panel_style(Color("17343b"), Color("55777b")))
+			var copy := VBoxContainer.new()
+			card.add_child(copy)
+			copy.add_child(_make_text("第%d天 · %s · %s夺魁" % [
+				int(entry["day"]), str(entry["name"]), str(entry["winner_name"])
+			], Color("f1d687")))
+			var ticket: Dictionary = entry.get("player_ticket", {})
+			copy.add_child(_make_text("你：%s %s %d金贝 · 封盘%.2f · %s · 本场%+d金贝" % [
+				str(ticket.get("ticket", "未购票")), str(ticket.get("beast_name", "")), int(ticket.get("stake", 0)),
+				float(entry.get("final_odds", 1.0)), "命中" if bool(entry.get("won", false)) else "未中", int(entry.get("net_cash", 0))
+			], Color("9edfc4") if bool(entry.get("won", false)) else Color("d7aaa2")))
+			var stage_lines: Array[String] = []
+			for raw_stage in entry.get("stage_reports", []):
+				var stage: Dictionary = raw_stage
+				stage_lines.append("%s：%s领先" % [str(stage["stage"]), str(stage["leader"])])
+			copy.add_child(_make_text(" · ".join(stage_lines), Color("b9cfcd")))
+			modal_body.add_child(card)
+	modal_body.add_child(_make_button("返回今日赛程", _open_race))
 
 
 func _open_map() -> void:

@@ -42,9 +42,9 @@ func _test_discovery_records_and_migration() -> void:
 	assert(state.item_verified_relation_count("water") == 1 and state.item_untried_pair_count("water") > 0, "详情统计必须区分已验证与尚未尝试的配对。")
 
 	var save_data := state.build_save_data({})
-	assert(int(save_data.get("version", 0)) == 3, "发现档案必须进入版本3存档。")
+	assert(int(save_data.get("version", 0)) == 4, "发现档案与赛事快照必须进入版本4存档。")
 	var restored = _state()
-	assert(bool(restored.restore_save_data(save_data).get("ok", false)), "版本3发现档案必须可往返读取。")
+	assert(bool(restored.restore_save_data(save_data).get("ok", false)), "当前版本发现档案必须可往返读取。")
 	assert(restored.discovery_record("steam") == steam, "发现来源、输入、关系和时间必须完整跨存档保留。")
 
 	var legacy = _state()
@@ -62,7 +62,7 @@ func _test_discovery_records_and_migration() -> void:
 		},
 		"world": {}
 	})
-	assert(bool(legacy_result.get("ok", false)), "版本2布尔发现存档必须迁移到版本3。")
+	assert(bool(legacy_result.get("ok", false)), "版本2布尔发现存档必须迁移到当前版本。")
 	var migrated := legacy.discovery_record("steam")
 	assert(str(migrated.get("first_source", "")) == "synthesis" and migrated.get("inputs", []) == ["water", "fire"], "迁移必须从固定配方恢复首次来源与输入。")
 	assert(int(migrated.get("first_day", 0)) == 3 and int(migrated.get("first_tide", 0)) == 6, "迁移必须优先使用旧实验记录的真实时间。")
