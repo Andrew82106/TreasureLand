@@ -40,12 +40,14 @@ var rebuild_queued: bool = false
 var pulse_after_rebuild: bool = false
 var strong_pulse_after_rebuild: bool = false
 var rebuild_in_progress: bool = false
-var center_pulse_tween: Tween
+var rebuild_ready: bool = false
 var presentation_tween: Tween
 var presentation_generation: int = 0
 var animations_enabled: bool = true
 var reduced_motion: bool = false
 var animation_speed_scale: float = 1.0
+var retired_ui_roots: Array[Dictionary] = []
+var retired_tweens: Array[Dictionary] = []
 
 var page_root: Control
 var left_library: GridContainer
@@ -67,6 +69,18 @@ func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	visible = false
+
+
+func _process(_delta: float) -> void:
+	# UI actions and Tween completion are delivered through native signals.
+	# Rebuilding or releasing reference-counted Tweens from those callbacks can
+	# destroy their emitter while Godot 4.7 is still dispatching the signal.
+	# `_process` is the only place allowed to execute queued rebuilds and retire
+	# old generations, so all destructive lifecycle work happens outside a
+	# signal emission stack.
+	if rebuild_queued and rebuild_ready and not rebuild_in_progress:
+		_flush_queued_rebuild()
+	_collect_retired_objects()
 
 
 func open() -> void:
@@ -123,17 +137,15 @@ func _rebuild() -> void:
 	presentation_generation += 1
 	_retire_tween(presentation_tween)
 	presentation_tween = null
-	_retire_tween(center_pulse_tween)
-	center_pulse_tween = null
 	motion_layer = null
 	left_input_card = null
 	right_input_card = null
-	for child in get_children():
+	if page_root != null and is_instance_valid(page_root):
 		# Godot 4.7 can keep native BaseButton, Tween and layout signal dispatch
 		# alive beyond a deferred call and even beyond one process frame. Do not
 		# detach or free an emitter tree while rebuilding. Retire it invisibly,
 		# keep it inside the SceneTree for several complete frames, then free it.
-		_retire_ui_root(child)
+		_retire_ui_root(page_root)
 	page_root = ColorRect.new()
 	page_root.color = Color("08191f")
 	page_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -182,42 +194,61 @@ func _rebuild() -> void:
 func _retire_ui_root(node: Node) -> void:
 	if node == null or not is_instance_valid(node):
 		return
+	if node.has_meta("synthesis_retired"):
+		return
+	node.set_meta("synthesis_retired", true)
 	node.process_mode = Node.PROCESS_MODE_DISABLED
 	if node is CanvasItem:
 		(node as CanvasItem).visible = false
 	if node is Control:
 		(node as Control).mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_release_ui_root_after_signal_unwind(node)
-
-
-func _release_ui_root_after_signal_unwind(node: Node) -> void:
-	var tree := get_tree()
-	if tree == null:
-		return
-	for frame in range(SIGNAL_RETIREMENT_FRAMES):
-		await tree.process_frame
-	if is_instance_valid(node):
-		node.queue_free()
+	retired_ui_roots.append({
+		"node": node,
+		"frames": SIGNAL_RETIREMENT_FRAMES,
+	})
 
 
 func _retire_tween(tween: Tween) -> void:
 	if tween == null:
 		return
+	var tween_id := tween.get_instance_id()
+	for entry in retired_tweens:
+		if int(entry.get("id", 0)) == tween_id:
+			return
 	if tween.is_valid() and tween.is_running():
 		tween.kill()
-	_hold_tween_after_signal_unwind(tween)
+	# Keep a strong reference until `_process` has crossed several complete
+	# frames. Never let an awaited signal callback release the last Tween ref.
+	retired_tweens.append({
+		"tween": tween,
+		"id": tween_id,
+		"frames": SIGNAL_RETIREMENT_FRAMES,
+	})
 
 
-func _hold_tween_after_signal_unwind(tween: Tween) -> void:
-	var tree := get_tree()
-	if tree == null:
-		return
-	# The coroutine-local reference deliberately keeps a completed Tween alive.
-	# Releasing the last reference from Tween.finished can crash Godot 4.7.
-	for frame in range(SIGNAL_RETIREMENT_FRAMES):
-		await tree.process_frame
-	if tween != null and tween.is_valid() and tween.is_running():
-		tween.kill()
+func _collect_retired_objects() -> void:
+	for index in range(retired_ui_roots.size() - 1, -1, -1):
+		var entry: Dictionary = retired_ui_roots[index]
+		var frames_left := int(entry.get("frames", 0)) - 1
+		if frames_left > 0:
+			entry["frames"] = frames_left
+			retired_ui_roots[index] = entry
+			continue
+		var node: Node = entry.get("node")
+		if node != null and is_instance_valid(node):
+			node.queue_free()
+		retired_ui_roots.remove_at(index)
+	for index in range(retired_tweens.size() - 1, -1, -1):
+		var entry: Dictionary = retired_tweens[index]
+		var frames_left := int(entry.get("frames", 0)) - 1
+		if frames_left > 0:
+			entry["frames"] = frames_left
+			retired_tweens[index] = entry
+			continue
+		# SceneTreeTween may already have been invalidated by the engine after
+		# completion. Removing the retained Variant outside a signal is enough;
+		# do not dereference a potentially invalid native instance here.
+		retired_tweens.remove_at(index)
 
 
 func _queue_rebuild(pulse_center: bool = false, strong_pulse: bool = false) -> void:
@@ -226,29 +257,21 @@ func _queue_rebuild(pulse_center: bool = false, strong_pulse: bool = false) -> v
 	if rebuild_queued:
 		return
 	rebuild_queued = true
-	# call_deferred() alone is not a sufficient lifetime boundary here. The
-	# request can originate from BaseButton.pressed or Tween.finished and Godot
-	# 4.7 may drain deferred calls before the native signal dispatch has fully
-	# unwound. Rebuilding then releases the emitter tree and can crash in C++.
-	# Crossing a process-frame boundary guarantees the original signal stack is
-	# gone before any controls or completed tweens are released.
-	_begin_queued_rebuild.call_deferred()
+	rebuild_ready = false
+	# A deferred callback only arms the request. The rebuild itself waits for
+	# `_process`, which cannot run inside the current Button/Tween signal.
+	_arm_queued_rebuild.call_deferred()
 
 
-func _begin_queued_rebuild() -> void:
-	if not rebuild_queued:
-		return
-	if not is_inside_tree():
-		rebuild_queued = false
-		return
-	await get_tree().process_frame
-	_flush_queued_rebuild()
+func _arm_queued_rebuild() -> void:
+	rebuild_ready = rebuild_queued and is_inside_tree()
 
 
 func _flush_queued_rebuild() -> void:
 	if not rebuild_queued:
 		return
 	rebuild_queued = false
+	rebuild_ready = false
 	var should_pulse := pulse_after_rebuild
 	var strong_pulse := strong_pulse_after_rebuild
 	pulse_after_rebuild = false
@@ -862,14 +885,10 @@ func _animation_duration(base_duration: float) -> float:
 
 
 func _finish_presentation_tween(tween: Tween) -> void:
-	# Awaiting Tween.finished resumes inside the signal emission. Dropping the
-	# last reference or replacing the member there can free the Tween from its
-	# own callback and crash Godot 4.7. Cross one full frame before releasing it.
+	# `Tween.finished` resumes inside the native signal emission. Register a
+	# strong retirement reference before any local/member reference can drop.
 	await tween.finished
-	if not is_inside_tree():
-		return
-	await get_tree().process_frame
-	_hold_tween_after_signal_unwind(tween)
+	_retire_tween(tween)
 	if presentation_tween == tween:
 		presentation_tween = null
 
@@ -879,15 +898,17 @@ func _presentation_alive(generation: int) -> bool:
 
 
 func _pulse_center(strong: bool = false) -> void:
-	if center_stage == null:
+	if center_stage == null or not is_instance_valid(center_stage):
 		return
 	center_stage.pivot_offset = center_stage.size * 0.5
 	center_stage.scale = Vector2(0.985, 0.985) if strong else Vector2(0.994, 0.994)
 	center_stage.modulate = Color("fff2b8") if strong else Color("d9f6ed")
-	_retire_tween(center_pulse_tween)
-	center_pulse_tween = create_tween().set_parallel(true)
-	center_pulse_tween.tween_property(center_stage, "scale", Vector2.ONE, 0.28 if strong else 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	center_pulse_tween.tween_property(center_stage, "modulate", Color.WHITE, 0.28 if strong else 0.14)
+	# This decorative pulse belongs to exactly one UI generation. Binding it to
+	# the stage lets Godot stop it with that stage and avoids retaining a member
+	# reference that becomes an invalid native Tween after completion.
+	var pulse_tween := create_tween().bind_node(center_stage).set_parallel(true)
+	pulse_tween.tween_property(center_stage, "scale", Vector2.ONE, 0.28 if strong else 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	pulse_tween.tween_property(center_stage, "modulate", Color.WHITE, 0.28 if strong else 0.14)
 
 
 func _show_graph() -> void:

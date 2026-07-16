@@ -202,9 +202,9 @@ func _test_full_screen_synthesis_ui() -> void:
 	fire_button.pressed.emit()
 	assert(table.page_root == old_page and is_instance_valid(old_page), "选择信号期间不得同步释放当前造化盆界面")
 	await process_frame
-	assert(table.page_root == old_page and is_instance_valid(old_page), "信号结束后的安全帧内仍不得释放原界面")
+	assert(is_instance_valid(old_page), "首个安全帧内即使已经换代，也仍不得释放原界面")
 	await process_frame
-	assert(table.page_root != old_page and table.left_id == "water" and table.right_id == "fire", "选择完成后必须跨过完整安全帧并合并执行一次界面重建")
+	assert(table.page_root != old_page and table.left_id == "water" and table.right_id == "fire", "选择完成后必须由_process合并执行一次界面重建")
 	assert(_tree_contains_text(table.center_stage, "首次尝试这段关系需要2金贝"), "中央舞台必须在提交前显示准确费用")
 	var result_page: Control = table.page_root
 	table.action_button.pressed.emit()

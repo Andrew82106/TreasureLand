@@ -72,8 +72,16 @@ func _run() -> void:
 		await process_frame
 		normal_frame_budget -= 1
 	assert(not table.busy and state.is_discovered("mud"), "A normal-speed first discovery must finish without releasing a Tween inside its own signal.")
+	# A player commonly pauses after the result animation. The decorative pulse
+	# has finished and its native Tween has been invalidated by this point; the
+	# next selection must not touch a stale member reference.
+	await create_timer(0.45).timeout
+	var delayed_left := _find_button(table.left_library, "火")
+	assert(delayed_left != null, "A selector must remain usable after an idle pause.")
+	delayed_left.pressed.emit()
 	await process_frame
 	await process_frame
+	assert(table.left_id == "fire", "A post-animation selection must rebuild safely.")
 
 	# Keep a fast repeated stress section as protection against emitter-tree and
 	# completed-Tween lifetime regressions that may only appear after many runs.
