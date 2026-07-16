@@ -217,6 +217,8 @@ func _on_time_boundary(kind: String, _data: Dictionary) -> void:
 		_apply_npc_schedule()
 	if kind == "phase":
 		_show_toast("进入%s：人物日程、鱼市报价与公开活动已经刷新。" % game.phase_name())
+	elif kind == "share_close":
+		_show_toast("潮汐商会已经收盘；现在只能提交次日开盘订单。")
 
 
 func _apply_npc_schedule() -> void:
@@ -491,8 +493,8 @@ func _refresh_hud() -> void:
 		return
 	world_lighting.set_environment(game.phase_name(), game.weather)
 	var coin_text := "金贝 %d" % game.cash
-	if game.locked_principal > 0:
-		coin_text = "金贝总计 %d · 可用 %d · 活动中 %d" % [game.account_wealth(), game.cash, game.locked_principal]
+	if game.locked_principal > 0 or game.share_reserved_cash > 0:
+		coin_text = "金贝总计 %d · 可用 %d · 活动中 %d · 待撮合 %d" % [game.account_wealth(), game.cash, game.locked_principal, game.share_reserved_cash]
 	var progress_percent := int(round(game.tide_progress * 100.0))
 	var clock_text := "日终停驻" if game.day_end_pending else "%s档 %d%% · %s" % [game.time_speed_mode, progress_percent, game.time_state_label()]
 	hud_label.text = "第%d天 · %s %d/16 · %s · %s · %s\n%s · %s · %s · 建议留存 %d金贝" % [
@@ -548,6 +550,7 @@ func _interact() -> void:
 		"basin": _open_synthesis()
 		"granny", "old_joe", "aqiu", "mia", "milo", "shopkeeper": _open_npc(nearest_marker.interaction_id)
 		"shop": _open_shop()
+		"exchange": _open_share_market()
 		"tea": _open_poker()
 		"news": _open_news()
 		"tower": _open_tower()
@@ -928,7 +931,8 @@ func _open_wealth() -> void:
 	stats.add_child(_wealth_stat("历史最高", "%d金贝" % peak_value, Color("f0d27e")))
 	modal_body.add_child(stats)
 
-	modal_body.add_child(_make_text("净资产 = 当前金贝 + 活动中金贝。永久万物、知识和凭证不折算为现金。曲线记录每次结算后的真实变化。", Color("a9c9ca")))
+	modal_body.add_child(_make_text("净资产 = 当前金贝 + 活动中/待撮合金贝 + 鱼获保守变现值 + 份契保守变现值。永久万物、知识和凭证不折算现金。", Color("a9c9ca")))
+	modal_body.add_child(_make_button("查看潮汐商会份契", _open_share_market))
 	var chart = WealthChartScript.new()
 	chart.setup(history)
 	modal_body.add_child(chart)
@@ -1098,6 +1102,12 @@ func _open_time_menu() -> void:
 	if not invitation_lines.is_empty():
 		modal_body.add_child(_make_text("今日牌会邀请\n• %s" % "\n• ".join(invitation_lines), Color("d7b6e8")))
 		modal_body.add_child(_make_button("查看牌会场次", _open_poker))
+	var share_status: Dictionary = game.share_market_status()
+	modal_body.add_child(_make_text("潮汐商会 · %s · %s\n待撮合订单%d笔，冻结%d金贝。" % [
+		str(share_status["label"]), str(share_status["next_boundary"]),
+		game.share_pending_orders.size(), game.share_reserved_cash
+	], Color("d8c17d")))
+	modal_body.add_child(_make_button("查看商会份契", _open_share_market))
 	var speed_row := HBoxContainer.new()
 	speed_row.add_theme_constant_override("separation", 8)
 	for mode in ["紧凑", "标准", "悠闲"]:
@@ -1131,7 +1141,7 @@ func _open_time_menu() -> void:
 	save_row.add_child(load_button)
 	modal_body.add_child(save_row)
 	if game.day_end_pending:
-		modal_body.add_child(_make_text("夜深了，时间已停驻。回漂流小屋查看日终并睡到次日。", Color("ffd98a")))
+		modal_body.add_child(_make_text("夜深了，时间已停驻。睡眠时先结算三家商会经营与分红，再以新报价撮合隔夜订单。", Color("ffd98a")))
 
 
 func _set_time_speed(mode: String) -> void:
@@ -1216,6 +1226,7 @@ func _open_bed() -> void:
 	_open_modal("漂流小屋")
 	modal_body.add_child(_make_text("这里可以保存、查看日终状态并休息。睡眠会结束今天，生成并固定次日天气、风向与日程。"))
 	modal_body.add_child(_make_text("当前：第%d天%s第%d潮刻 · %s · %s" % [game.day, game.phase_name(), game.tide, game.weather, game.wind_direction], Color("f0d27e")))
+	modal_body.add_child(_make_text("睡眠结算顺序：三家商会经营与分红 → 次日天气/鱼市/赛事 → 新报价 → %d笔隔夜订单撮合。" % game.share_pending_orders.size(), Color("d9c47f")))
 	var save_row := HBoxContainer.new()
 	save_row.add_theme_constant_override("separation", 8)
 	var save_button := _make_button("保存当前进度", _manual_save, not game.can_save_game())
@@ -1230,13 +1241,25 @@ func _open_bed() -> void:
 
 
 func _sleep() -> void:
+	var closing_day := int(game.day)
 	game.sleep_to_next_day()
 	_apply_npc_schedule()
 	var autosave: Dictionary = game.save_auto_game(_world_save_state())
+	var dividend_total := 0
+	if not game.share_dividend_history.is_empty() and int(game.share_dividend_history[0].get("day", 0)) == closing_day:
+		dividend_total = int(game.share_dividend_history[0].get("total", 0))
+	var quote_lines: Array[String] = []
+	for raw_row in game.share_market_rows():
+		var row: Dictionary = raw_row
+		quote_lines.append("%s %d（%+d）" % [str(row["short_name"]), int(row["price"]), int(row["change"])])
+	var executed_orders := 0
+	for raw_trade in game.share_trade_history:
+		if raw_trade is Dictionary and int(raw_trade.get("day", 0)) == game.day and str(raw_trade.get("source", "")) == "次日开盘撮合":
+			executed_orders += 1
 	_show_result(
 		"新的一天",
-		"第%d天清晨。今日天气：%s，风向：%s。\n%s" % [
-			game.day, game.weather, game.wind_direction,
+		"第%d天清晨。今日天气：%s，风向：%s。\n商会分红%d金贝；开盘撮合%d笔。%s。\n%s" % [
+			game.day, game.weather, game.wind_direction, dividend_total, executed_orders, "；".join(quote_lines),
 			"日终自动存档已创建。" if bool(autosave.get("ok", false)) else str(autosave.get("text", "自动存档未完成。"))
 		]
 	)
@@ -1574,6 +1597,12 @@ func _open_news() -> void:
 		modal_body.add_child(_make_text(game.poker_rumor_summary(), Color("bcd5d2")))
 		modal_body.add_child(_make_button("查看牌会场次与邀请", _open_poker))
 		modal_body.add_child(HSeparator.new())
+	var share_news: Dictionary = game.share_market_news_summary()
+	modal_body.add_child(_make_text("潮汐商会 · 产业份契", Color("e8c98a")))
+	modal_body.add_child(_make_text(str(share_news.get("headline", "三家商会尚未形成经营消息。")), Color("bcd5d2")))
+	modal_body.add_child(_make_text("%s · %s" % [str(share_news.get("status", {}).get("label", "")), str(share_news.get("status", {}).get("next_boundary", ""))], Color("91bdb8")))
+	modal_body.add_child(_make_button("查看经营账目与份契", _open_share_market))
+	modal_body.add_child(HSeparator.new())
 	var race_news: Dictionary = game.race_news_summary()
 	modal_body.add_child(_make_text("逐风竞速 · 今日赛场", Color("f0d27e")))
 	modal_body.add_child(_make_text(str(race_news.get("headline", "今日赛事等待公开消息。")), Color("c7dcda")))
@@ -1585,6 +1614,125 @@ func _open_news() -> void:
 			"你的祝胜券命中" if bool(latest_race.get("won", false)) else "你的祝胜券未中"
 		], Color("9edfc4")))
 	modal_body.add_child(_make_button("查看今日赛程与票池", _open_race))
+
+
+func _open_share_market(message: String = "") -> void:
+	_open_modal("潮汐商会 · 产业份契")
+	var status: Dictionary = game.share_market_status()
+	var access := bool(game.can_trade_shares())
+	if not message.is_empty():
+		modal_body.add_child(_make_text(message, Color("9edbb6") if not ("不足" in message or "不能" in message or "不存在" in message) else Color("eda69b")))
+	modal_body.add_child(_make_text("%s · %s\n%s" % [str(status["label"]), str(status["next_boundary"]), str(status["detail"])], Color("f1d687")))
+	var stats := HBoxContainer.new()
+	stats.add_theme_constant_override("separation", 8)
+	stats.add_child(_wealth_stat("可用金贝", "%d" % game.cash, Color("8ee0b1")))
+	stats.add_child(_wealth_stat("待撮合", "%d" % game.share_reserved_cash, Color("f0d27e")))
+	stats.add_child(_wealth_stat("份契估值", "%d" % game.share_liquidation_value(), Color("9edfc4")))
+	modal_body.add_child(stats)
+	modal_body.add_child(_make_text(
+		"交易资格：%s。经营报告对所有人公开；账户财富首次达到20,000金贝后永久开放交易。份契可能上涨或下跌，不保证回本；当日买入次日才可卖出。"
+		% ("已取得" if access else "未取得"),
+		Color("c7dcda")
+	))
+	for raw_row in game.share_market_rows():
+		var row: Dictionary = raw_row
+		var panel := PanelContainer.new()
+		panel.add_theme_stylebox_override("panel", _panel_style(Color("17343b"), Color(str(row["color"])) if access else Color("50666a")))
+		var box := VBoxContainer.new()
+		box.add_theme_constant_override("separation", 6)
+		panel.add_child(box)
+		var heading := HBoxContainer.new()
+		var title := _make_text("%s · %s" % [str(row["name"]), str(row["sector"])], Color("f1d687"))
+		title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		heading.add_child(title)
+		var change := int(row["change"])
+		var change_text := "±0" if change == 0 else ("%+d" % change)
+		var price_label := _make_text("%d金贝 · %s（%+.1f%%）" % [int(row["price"]), change_text, float(row["change_rate"]) * 100.0], Color("8ee0b1") if change >= 0 else Color("eda69b"))
+		price_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+		price_label.custom_minimum_size.x = 220
+		price_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		heading.add_child(price_label)
+		box.add_child(heading)
+		box.add_child(_make_text(str(row["description"]), Color("a9c6c3")))
+		var report: Dictionary = row.get("report", {})
+		box.add_child(_make_text("昨日经营：收入%d · 成本%d · 利润%+d · 每份分红%d" % [
+			int(report.get("revenue", 0)), int(report.get("costs", 0)), int(report.get("profit", 0)), int(report.get("dividend_per_share", 0))
+		], Color("d8e6df")))
+		box.add_child(_make_text("公开原因：%s" % "；".join(report.get("drivers", ["尚无昨日经营数据"])), Color("91b9b6")))
+		box.add_child(_make_text("%s · 持有%d / %d份 · 可售%d · 均价%.1f · 市值%d · 浮动%+.0f" % [
+			str(row["influence"]), int(row["quantity"]), int(row["player_cap"]), int(row["sellable"]), float(row["average_cost"]),
+			int(row["market_value"]), float(row["unrealized"])
+		], Color("f0cf82")))
+		var actions := GridContainer.new()
+		actions.columns = 4
+		actions.add_theme_constant_override("h_separation", 6)
+		actions.add_theme_constant_override("v_separation", 6)
+		var buy_one_total: int = int(row["price"]) + int(game.share_trade_fee(int(row["price"])))
+		var buy_five_gross := int(row["price"]) * 5
+		var buy_five_total: int = buy_five_gross + int(game.share_trade_fee(buy_five_gross))
+		var sell_one_proceeds: int = int(row["price"]) - int(game.share_trade_fee(int(row["price"])))
+		var cap_remaining := int(row["player_cap"]) - int(row["quantity"])
+		if bool(status["open"]):
+			actions.add_child(_make_button("买1 · %d" % buy_one_total, _trade_shares.bind(str(row["company_id"]), "buy", 1), not access or game.cash < buy_one_total or cap_remaining < 1))
+			actions.add_child(_make_button("买5 · %d" % buy_five_total, _trade_shares.bind(str(row["company_id"]), "buy", 5), not access or game.cash < buy_five_total or cap_remaining < 5))
+			actions.add_child(_make_button("卖1 · 收%d" % sell_one_proceeds, _trade_shares.bind(str(row["company_id"]), "sell", 1), not access or int(row["sellable"]) < 1))
+			actions.add_child(_make_button("卖出全部可售", _trade_shares.bind(str(row["company_id"]), "sell", int(row["sellable"])), not access or int(row["sellable"]) < 1))
+		else:
+			var reserve_one := int(game.share_overnight_buy_reserve(str(row["company_id"]), 1))
+			var reserve_five := int(game.share_overnight_buy_reserve(str(row["company_id"]), 5))
+			actions.add_child(_make_button("挂次日买1 · 冻结%d" % reserve_one, _queue_share_order.bind(str(row["company_id"]), "buy", 1), not access or cap_remaining < 1 or game.cash < reserve_one))
+			actions.add_child(_make_button("挂次日买5 · 冻结%d" % reserve_five, _queue_share_order.bind(str(row["company_id"]), "buy", 5), not access or cap_remaining < 5 or game.cash < reserve_five))
+			actions.add_child(_make_button("挂次日卖1", _queue_share_order.bind(str(row["company_id"]), "sell", 1), not access or int(row["sellable"]) < 1))
+			actions.add_child(_make_button("挂全部可售", _queue_share_order.bind(str(row["company_id"]), "sell", int(row["sellable"])), not access or int(row["sellable"]) < 1))
+		box.add_child(actions)
+		modal_body.add_child(panel)
+	if not game.share_pending_orders.is_empty():
+		modal_body.add_child(_make_text("待撮合订单", Color("f1d687")))
+		for raw_order in game.share_pending_orders:
+			var order: Dictionary = raw_order
+			var company: Dictionary = game.SHARE_COMPANIES.get(str(order["company_id"]), {})
+			var order_row := HBoxContainer.new()
+			var order_text := "%s · 次日%s%d份 · 参考价%d%s" % [
+				str(company.get("name", order["company_id"])),
+				"买入" if str(order["side"]) == "buy" else "卖出",
+				int(order["quantity"]), int(order["reference_price"]),
+				(" · 冻结%d金贝" % int(order["reserved_cash"])) if int(order.get("reserved_cash", 0)) > 0 else ""
+			]
+			var order_label := _make_text(order_text, Color("c7dcda"))
+			order_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			order_row.add_child(order_label)
+			order_row.add_child(_make_button("撤销", _cancel_share_order.bind(str(order["order_id"]))))
+			modal_body.add_child(order_row)
+	if not game.share_trade_history.is_empty():
+		modal_body.add_child(_make_text("最近成交", Color("f1d687")))
+		for index in range(mini(6, game.share_trade_history.size())):
+			var trade: Dictionary = game.share_trade_history[index]
+			var company: Dictionary = game.SHARE_COMPANIES.get(str(trade["company_id"]), {})
+			modal_body.add_child(_make_text("第%d天 · %s%s%d份 @ %d · 交易费%d · %s" % [
+				int(trade["day"]), str(company.get("short_name", "")),
+				"买" if str(trade["side"]) == "buy" else "卖", int(trade["quantity"]), int(trade["price"]),
+				int(trade["fee"]), str(trade["source"])
+			], Color("a9c6c3")))
+	if not game.share_dividend_history.is_empty():
+		var dividend: Dictionary = game.share_dividend_history[0]
+		modal_body.add_child(_make_text("最近分红：第%d日共%d金贝。未满持有期或公司无可分利润时为0。" % [int(dividend["day"]), int(dividend["total"])], Color("9edfc4")))
+	modal_body.add_child(_make_button("查看《晴潮晨报》产业消息", _open_news))
+	modal_body.add_child(_make_button("查看财富轨迹", _open_wealth))
+
+
+func _trade_shares(company_id: String, side: String, quantity: int) -> void:
+	var result: Dictionary = game.trade_shares(company_id, side, quantity)
+	_open_share_market(str(result.get("text", "交易未执行。")))
+
+
+func _queue_share_order(company_id: String, side: String, quantity: int) -> void:
+	var result: Dictionary = game.queue_share_order(company_id, side, quantity)
+	_open_share_market(str(result.get("text", "订单未提交。")))
+
+
+func _cancel_share_order(order_id: String) -> void:
+	var result: Dictionary = game.cancel_share_order(order_id)
+	_open_share_market(str(result.get("text", "订单未撤销。")))
 
 
 func _open_tower() -> void:
