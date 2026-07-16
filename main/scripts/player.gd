@@ -1,5 +1,7 @@
 extends CharacterBody2D
 
+const WorldLayoutScript = preload("res://scripts/world_layout.gd")
+
 signal interact_requested
 signal inventory_requested
 
@@ -21,8 +23,8 @@ func _physics_process(_delta: float) -> void:
 	var direction := Input.get_vector("move_left", "move_right", "move_up", "move_down")
 	velocity = direction * speed
 	move_and_slide()
-	global_position.x = clampf(global_position.x, 25.0, 1775.0)
-	global_position.y = clampf(global_position.y, 55.0, 585.0)
+	global_position.x = clampf(global_position.x, 25.0, WorldLayoutScript.WORLD_SIZE.x - 25.0)
+	global_position.y = clampf(global_position.y, 25.0, WorldLayoutScript.WORLD_SIZE.y - 25.0)
 	character_visual.set_motion(direction)
 
 	if Input.is_action_just_pressed("interact"):

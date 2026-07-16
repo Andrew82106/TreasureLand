@@ -27,6 +27,23 @@ func _run() -> void:
 		push_error("The synthesis snapshot must be writable with an active rendering driver.")
 		quit(1)
 		return
+	table._select_item("left", "water")
+	table._select_item("right", "fire")
+	await process_frame
+	table.action_button.pressed.emit()
+	await create_timer(0.50).timeout
+	await process_frame
+	await process_frame
+	assert(table.busy and _tree_contains_name(table.motion_layer, "RelationshipMotion"), "The relationship effect must be visible during a real synthesis presentation.")
+	if _save_snapshot(output_dir.path_join("synthesis_relation_motion_1280x720.png")) != OK:
+		push_error("The synthesis motion snapshot must be writable with an active rendering driver.")
+		quit(1)
+		return
+	for _attempt in range(180):
+		if not table.busy:
+			break
+		await process_frame
+	assert(not table.busy, "The synthesis presentation must finish before opening the graph overlay.")
 	table._show_graph()
 	await process_frame
 	await process_frame
@@ -54,5 +71,14 @@ func _tree_contains_class(node: Node, class_name_value: String) -> bool:
 		return true
 	for child in node.get_children():
 		if _tree_contains_class(child, class_name_value):
+			return true
+	return false
+
+
+func _tree_contains_name(node: Node, node_name: String) -> bool:
+	if node.name == node_name:
+		return true
+	for child in node.get_children():
+		if _tree_contains_name(child, node_name):
 			return true
 	return false

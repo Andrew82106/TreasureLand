@@ -4,22 +4,32 @@ const GameStateScript = preload("res://scripts/game_state.gd")
 const MarkerScript = preload("res://scripts/interactable.gd")
 const PokerTableScript = preload("res://scripts/poker_table.gd")
 const SynthesisTableScript = preload("res://scripts/synthesis_table.gd")
+const DiveTableScript = preload("res://scripts/dive_table.gd")
 const WealthChartScript = preload("res://scripts/wealth_chart.gd")
-const IslandPanorama = preload("res://assets/art/island_panorama_v1.png")
+const WorldLayoutScript = preload("res://scripts/world_layout.gd")
+const MapOverviewScript = preload("res://scripts/map_overview.gd")
+const PixelCharacterScene = preload("res://scenes/components/pixel_character_animator.tscn")
+const IslandGroundMap = preload("res://assets/art/environments/world_map_v2/island_ground_map_v2.png")
 const SynthesisCollectionAtlas = preload("res://assets/art/synthesis_collection_atlas_v1.png")
 const RaceBanner = preload("res://assets/art/race_banner_v1.png")
 const ShopMaterialAtlas = preload("res://assets/art/shop_material_atlas_v1.png")
 
 @onready var player: CharacterBody2D = $Player
 @onready var markers_root: Node2D = $Markers
+@onready var npc_visuals_root: Node2D = $NPCVisuals
+@onready var world_root: Node2D = $World
+@onready var world_lighting: WorldLighting = $WorldLighting
 @onready var ui_layer: CanvasLayer = $UILayer
 
 var game
 var markers: Array[Node2D] = []
 var marker_by_id := {}
+var npc_visual_by_id := {}
 var nearest_marker: Node2D
 var discovered_areas := {"漂流湾": true}
 var current_area := "漂流湾"
+var clock_hud_elapsed: float = 0.0
+var day_end_notice_day: int = 0
 
 var ui_root: Control
 var hud_label: Label
@@ -33,6 +43,7 @@ var modal_title: Label
 var modal_body: VBoxContainer
 var poker_table: Control
 var synthesis_table: Control
+var dive_table: Control
 
 var race_beast_option: OptionButton
 var race_ticket_option: OptionButton
@@ -45,7 +56,9 @@ func _ready() -> void:
 	game = GameStateScript.new()
 	game.changed.connect(_refresh_hud)
 	game.notice.connect(_show_toast)
+	_build_world_collisions()
 	_build_markers()
+	_build_npc_visuals()
 	_build_ui()
 	player.interact_requested.connect(_interact)
 	player.inventory_requested.connect(_open_collection)
@@ -70,15 +83,53 @@ func _ready() -> void:
 		_open_synthesis()
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	var dive_activity_open: bool = dive_table != null and dive_table.visible and dive_table.mode == "dive"
+	var dive_interface_open: bool = dive_table != null and dive_table.visible and dive_table.mode != "dive"
+	var formal_activity_open: bool = (synthesis_table != null and synthesis_table.visible) or (poker_table != null and poker_table.visible) or dive_activity_open
+	game.set_time_pause("formal_activity", formal_activity_open, game.TIME_STATE_ACTIVITY)
+	game.set_time_pause("interface", (modal_overlay != null and modal_overlay.visible) or dive_interface_open, game.TIME_STATE_UI)
+	if game.advance_world_delta(delta):
+		clock_hud_elapsed += delta
+		if clock_hud_elapsed >= 0.5:
+			clock_hud_elapsed = 0.0
+			_refresh_hud()
+	if game.day_end_pending and day_end_notice_day != game.day:
+		day_end_notice_day = game.day
+		_show_toast("夜深了，世界时间已经停驻。回漂流小屋查看结算并休息。")
 	_update_area_discovery()
 	_update_nearest_marker()
 	var milo = marker_by_id.get("milo")
 	if milo != null:
 		milo.visible = game.poker_completed or game.phase_name() == "夜晚"
+	var milo_visual = npc_visual_by_id.get("milo")
+	if milo_visual != null:
+		milo_visual.visible = game.poker_completed or game.phase_name() == "夜晚"
+
+
+func _notification(what: int) -> void:
+	if game == null:
+		return
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+		game.set_time_pause("focus_lost", true, game.TIME_STATE_UI)
+		if dive_table != null and dive_table.visible and dive_table.mode == "dive":
+			dive_table.set_activity_pause("focus", true)
+	elif what == NOTIFICATION_APPLICATION_FOCUS_IN:
+		game.set_time_pause("focus_lost", false)
+		if dive_table != null:
+			dive_table.set_activity_pause("focus", false)
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if dive_table != null and dive_table.visible:
+		if event.is_action_pressed("interact") and dive_table.mode == "dive":
+			dive_table.handle_interact()
+			get_viewport().set_input_as_handled()
+			return
+		if event.is_action_pressed("ui_cancel"):
+			dive_table.request_close()
+			get_viewport().set_input_as_handled()
+			return
 	if event.is_action_pressed("ui_cancel") and synthesis_table != null and synthesis_table.visible:
 		synthesis_table.request_close()
 		get_viewport().set_input_as_handled()
@@ -90,23 +141,54 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event.is_action_pressed("ui_cancel") and modal_overlay.visible:
 		_close_modal()
 		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed("ui_cancel"):
+		_open_time_menu()
+		get_viewport().set_input_as_handled()
 
 
 func _build_markers() -> void:
-	_add_marker("bed", "漂流小屋", Vector2(95, 205), Color("9ecae1"))
-	_add_marker("fish", "浅滩采集", Vector2(190, 465), Color("6bd6e8"))
-	_add_marker("basin", "造化盆", Vector2(405, 330), Color("e7c85d"))
-	_add_marker("granny", "榕奶奶", Vector2(515, 250), Color("f3a6b9"))
-	_add_marker("shop", "杂货铺", Vector2(710, 335), Color("f2b366"))
-	_add_marker("shopkeeper", "铺主阿拓", Vector2(790, 255), Color("e49f5a"))
-	_add_marker("tea", "命运牌会", Vector2(930, 335), Color("b38ee6"))
-	_add_marker("old_joe", "老乔", Vector2(1010, 255), Color("c3a3ed"))
-	_add_marker("news", "岛报栏", Vector2(1120, 405), Color("f4e1a1"))
-	_add_marker("mia", "米娅", Vector2(1100, 285), Color("ffcf70"))
-	_add_marker("tower", "万象塔", Vector2(1050, 205), Color("d9eef2"))
-	_add_marker("race", "逐风竞速", Vector2(1340, 335), Color("7ee0a2"))
-	_add_marker("aqiu", "阿葵", Vector2(1590, 305), Color("93e0ba"))
-	_add_marker("milo", "米洛", Vector2(1710, 245), Color("95b9ff"))
+	for definition in WorldLayoutScript.MARKERS:
+		_add_marker(
+			str(definition["id"]),
+			str(definition["label"]),
+			definition["position"],
+			definition["color"]
+		)
+
+
+func _build_npc_visuals() -> void:
+	for definition in WorldLayoutScript.NPC_VISUALS:
+		var holder := Node2D.new()
+		var character_id := str(definition["id"])
+		holder.name = character_id
+		holder.position = definition["position"]
+		var animator: PixelCharacterAnimator = PixelCharacterScene.instantiate()
+		animator.atlas_texture = load(str(definition["atlas"]))
+		animator.walk_frame_count = 4
+		animator.idle_frame_count = 4
+		animator.use_placeholder_when_missing = false
+		animator.facing = int(definition.get("facing", PixelCharacterAnimator.Facing.DOWN))
+		holder.add_child(animator)
+		npc_visuals_root.add_child(holder)
+		npc_visual_by_id[character_id] = holder
+
+
+func _build_world_collisions() -> void:
+	var collision_root := Node2D.new()
+	collision_root.name = "GeneratedCollision"
+	world_root.add_child(collision_root)
+	for index in range(WorldLayoutScript.BLOCKERS.size()):
+		var blocker: Rect2 = WorldLayoutScript.BLOCKERS[index]
+		var body := StaticBody2D.new()
+		body.name = "Blocker%02d" % index
+		body.position = blocker.get_center()
+		var shape_node := CollisionShape2D.new()
+		var shape := RectangleShape2D.new()
+		shape.size = blocker.size
+		shape_node.shape = shape
+		body.add_child(shape_node)
+		collision_root.add_child(body)
 
 
 func _add_marker(id_value: String, label_value: String, position_value: Vector2, color_value: Color) -> void:
@@ -149,6 +231,9 @@ func _build_ui() -> void:
 	var wealth_button := _make_button("财富轨迹", _open_wealth)
 	wealth_button.custom_minimum_size.x = 104
 	top_row.add_child(wealth_button)
+	var schedule_button := _make_button("日程", _open_time_menu)
+	schedule_button.custom_minimum_size.x = 74
+	top_row.add_child(schedule_button)
 	var map_button := _make_button("地图", _open_map)
 	map_button.custom_minimum_size.x = 74
 	top_row.add_child(map_button)
@@ -233,6 +318,11 @@ func _build_ui() -> void:
 	synthesis_table.setup(game)
 	synthesis_table.closed.connect(_on_synthesis_table_closed)
 	ui_root.add_child(synthesis_table)
+	dive_table = DiveTableScript.new()
+	dive_table.setup(game)
+	dive_table.closed.connect(_on_dive_table_closed)
+	dive_table.checkpoint_requested.connect(_on_dive_checkpoint_requested)
+	ui_root.add_child(dive_table)
 
 
 func _panel_style(background: Color, border: Color) -> StyleBoxFlat:
@@ -324,22 +414,21 @@ func _item_art(item_id: String, size_value: float = 150.0, discovered_value: boo
 func _refresh_hud() -> void:
 	if hud_label == null:
 		return
+	world_lighting.set_environment(game.phase_name(), game.weather)
 	var coin_text := "金贝 %d" % game.cash
 	if game.locked_principal > 0:
 		coin_text = "金贝总计 %d · 可用 %d · 活动中 %d" % [game.account_wealth(), game.cash, game.locked_principal]
-	hud_label.text = "第%d天 · %s %d/16 · %s · %s\n%s · %s · 建议留存 %d金贝" % [
-		game.day, game.phase_name(), game.tide, game.weather, current_area,
-		coin_text, game.wealth_title(), game.suggested_reserve()
+	var progress_percent := int(round(game.tide_progress * 100.0))
+	var clock_text := "日终停驻" if game.day_end_pending else "%s档 %d%% · %s" % [game.time_speed_mode, progress_percent, game.time_state_label()]
+	hud_label.text = "第%d天 · %s %d/16 · %s · %s · %s\n%s · %s · %s · 建议留存 %d金贝" % [
+		game.day, game.phase_name(), game.tide, game.weather, game.wind_direction, current_area,
+		coin_text, game.wealth_title(), clock_text, game.suggested_reserve()
 	]
 	inventory_button.text = "万物 %d" % game.discovered_item_ids().size()
 
 
 func _update_area_discovery() -> void:
-	var next_area := "漂流湾"
-	if player.global_position.x >= 1200:
-		next_area = "逐风海岸"
-	elif player.global_position.x >= 600:
-		next_area = "椰影街"
+	var next_area := WorldLayoutScript.area_for_position(player.global_position)
 	if next_area != current_area:
 		current_area = next_area
 		_refresh_hud()
@@ -379,7 +468,8 @@ func _interact() -> void:
 		return
 	match nearest_marker.interaction_id:
 		"bed": _open_bed()
-		"fish": _do_fish()
+		"fish": _open_dive("prep")
+		"fish_market": _open_dive("market")
 		"basin": _open_synthesis()
 		"granny": _open_granny()
 		"shop", "shopkeeper": _open_shop()
@@ -565,6 +655,21 @@ func _on_synthesis_table_closed() -> void:
 	_refresh_hud()
 
 
+func _open_dive(initial_mode: String = "prep") -> void:
+	modal_overlay.visible = false
+	dive_table.open(initial_mode)
+	player.controls_enabled = false
+
+
+func _on_dive_table_closed() -> void:
+	player.controls_enabled = true
+	_refresh_hud()
+
+
+func _on_dive_checkpoint_requested(_reason: String) -> void:
+	game.save_game("user://saves/activity_dive.json", _world_save_state(), true)
+
+
 func _open_shop() -> void:
 	_open_modal("椰影杂货铺")
 	var intro := PanelContainer.new()
@@ -627,21 +732,155 @@ func _buy_shop_offer(offer_id: String) -> void:
 	_open_shop()
 
 
-func _do_fish() -> void:
-	var result: Dictionary = game.fish_once()
-	var title := "浅滩采集 · 消耗1潮刻" if bool(result.get("ok", false)) else "浅滩今日已采尽"
-	_show_result(title, str(result["text"]))
+func _open_time_menu() -> void:
+	_open_modal("日程与时间")
+	var progress_percent := int(round(game.tide_progress * 100.0))
+	modal_body.add_child(_make_text(
+		"第%d天 · %s第%d潮刻（%d%%）\n天气：%s · 风向：%s\n打开界面、阅读和决策时世界时间暂停。" % [
+			game.day, game.phase_name(), game.tide, progress_percent, game.weather, game.wind_direction
+		],
+		Color("d7ece7")
+	))
+	var speed_row := HBoxContainer.new()
+	speed_row.add_theme_constant_override("separation", 8)
+	for mode in ["紧凑", "标准", "悠闲"]:
+		var seconds := int(game.TIME_SPEED_SECONDS[mode])
+		var label := "✓ %s · %d秒/潮刻" % [mode, seconds] if game.time_speed_mode == mode else "%s · %d秒/潮刻" % [mode, seconds]
+		var speed_button := _make_button(label, _set_time_speed.bind(mode))
+		speed_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		speed_row.add_child(speed_button)
+	modal_body.add_child(_make_text("自然流速", Color("f0d27e")))
+	modal_body.add_child(speed_row)
+
+	var wait_row := HBoxContainer.new()
+	wait_row.add_theme_constant_override("separation", 8)
+	var wait_one := _make_button("等待1潮刻", _wait_tides.bind(1.0), game.day_end_pending)
+	wait_one.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	wait_row.add_child(wait_one)
+	var to_phase := _time_to_next_phase()
+	var wait_phase := _make_button("等待到下一时段 · %.2f潮刻" % to_phase, _wait_tides.bind(to_phase), game.day_end_pending)
+	wait_phase.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	wait_row.add_child(wait_phase)
+	modal_body.add_child(_make_text("主动等待会按顺序处理跨过的潮刻和时段边界。", Color("a9c4c0")))
+	modal_body.add_child(wait_row)
+
+	var save_row := HBoxContainer.new()
+	save_row.add_theme_constant_override("separation", 8)
+	var save_button := _make_button("保存当前进度", _manual_save, not game.can_save_game())
+	save_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	save_row.add_child(save_button)
+	var load_button := _make_button("读取手动存档", _manual_load, not FileAccess.file_exists(game.MANUAL_SAVE_PATH))
+	load_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	save_row.add_child(load_button)
+	modal_body.add_child(save_row)
+	if game.day_end_pending:
+		modal_body.add_child(_make_text("夜深了，时间已停驻。回漂流小屋查看日终并睡到次日。", Color("ffd98a")))
+
+
+func _set_time_speed(mode: String) -> void:
+	game.set_time_speed_mode(mode)
+	_open_time_menu()
+
+
+func _time_to_next_phase() -> float:
+	var current_time: float = float(game.tide - 1) + float(game.tide_progress)
+	var boundary: float = 4.0
+	for candidate in [4.0, 8.0, 12.0, 16.0]:
+		if candidate > current_time + 0.000001:
+			boundary = float(candidate)
+			break
+	return maxf(0.000001, boundary - current_time)
+
+
+func _wait_tides(amount: float) -> void:
+	var old_day: int = game.day
+	var old_tide: int = game.tide
+	if not game.fast_forward_time(amount, "主动等待"):
+		_show_result("无法等待", "当前已经处于日终停驻，请回漂流小屋休息。", _open_time_menu)
+		return
+	_show_result(
+		"时间已推进",
+		"从第%d天第%d潮刻推进到第%d天%s第%d潮刻。%s" % [
+			old_day, old_tide, game.day, game.phase_name(), game.tide,
+			"世界已进入日终停驻。" if game.day_end_pending else "日程边界已按顺序结算。"
+		],
+		_open_time_menu
+	)
+
+
+func _world_save_state() -> Dictionary:
+	return {
+		"discovered_areas": discovered_areas.duplicate(true),
+		"current_area": current_area,
+		"player_position": {"x": player.global_position.x, "y": player.global_position.y}
+	}
+
+
+func _apply_loaded_world(world: Dictionary) -> void:
+	var restored_areas := {"漂流湾": true}
+	var saved_areas = world.get("discovered_areas", {})
+	if saved_areas is Dictionary:
+		for area_name in WorldLayoutScript.AREA_ORDER:
+			if bool(saved_areas.get(area_name, false)):
+				restored_areas[area_name] = true
+	discovered_areas = restored_areas
+	var saved_area := str(world.get("current_area", "漂流湾"))
+	current_area = saved_area if WorldLayoutScript.REGIONS.has(saved_area) else "漂流湾"
+	var saved_position = world.get("player_position", {})
+	if saved_position is Dictionary and saved_position.has("x") and saved_position.has("y"):
+		var candidate := Vector2(float(saved_position["x"]), float(saved_position["y"]))
+		if WorldLayoutScript.WORLD_RECT.has_point(candidate):
+			player.global_position = candidate
+		else:
+			player.global_position = WorldLayoutScript.spawn_for_area(current_area)
+	else:
+		player.global_position = WorldLayoutScript.spawn_for_area(current_area)
+	current_area = WorldLayoutScript.area_for_position(player.global_position)
+	discovered_areas[current_area] = true
+	day_end_notice_day = game.day if game.day_end_pending else 0
+	_refresh_hud()
+
+
+func _manual_save() -> void:
+	var result: Dictionary = game.save_game(game.MANUAL_SAVE_PATH, _world_save_state())
+	_show_result("手动存档", str(result.get("text", "存档未完成。")), _open_time_menu)
+
+
+func _manual_load() -> void:
+	var result: Dictionary = game.load_game(game.MANUAL_SAVE_PATH)
+	if bool(result.get("ok", false)):
+		var world = result.get("world", {})
+		_apply_loaded_world(world if world is Dictionary else {})
+	_show_result("读取存档", str(result.get("text", "读档未完成。")), _open_time_menu)
 
 
 func _open_bed() -> void:
 	_open_modal("漂流小屋")
-	modal_body.add_child(_make_text("休息会直接结束今天，进入次日清晨；浅滩观察次数、天气与赛事随之刷新。"))
+	modal_body.add_child(_make_text("这里可以保存、查看日终状态并休息。睡眠会结束今天，生成并固定次日天气、风向与日程。"))
+	modal_body.add_child(_make_text("当前：第%d天%s第%d潮刻 · %s · %s" % [game.day, game.phase_name(), game.tide, game.weather, game.wind_direction], Color("f0d27e")))
+	var save_row := HBoxContainer.new()
+	save_row.add_theme_constant_override("separation", 8)
+	var save_button := _make_button("保存当前进度", _manual_save, not game.can_save_game())
+	save_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	save_row.add_child(save_button)
+	var load_button := _make_button("读取手动存档", _manual_load, not FileAccess.file_exists(game.MANUAL_SAVE_PATH))
+	load_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	save_row.add_child(load_button)
+	modal_body.add_child(save_row)
+	modal_body.add_child(_make_button("调整日长与主动等待", _open_time_menu))
 	modal_body.add_child(_make_button("睡到明天", _sleep))
 
 
 func _sleep() -> void:
 	game.sleep_to_next_day()
-	_show_result("新的一天", "第%d天清晨。今日天气：%s。" % [game.day, game.weather])
+	var autosave: Dictionary = game.save_auto_game(_world_save_state())
+	_show_result(
+		"新的一天",
+		"第%d天清晨。今日天气：%s，风向：%s。\n%s" % [
+			game.day, game.weather, game.wind_direction,
+			"日终自动存档已创建。" if bool(autosave.get("ok", false)) else str(autosave.get("text", "自动存档未完成。"))
+		]
+	)
 
 
 func _open_granny() -> void:
@@ -665,6 +904,10 @@ func _open_mia() -> void:
 	_open_modal("米娅 · %s" % game.relationship_state("mia"))
 	modal_body.add_child(_make_text("“岛报只讲公开信息，最终下注还得你自己判断。”", Color("ffe4a5")))
 	modal_body.add_child(_make_text("今日天气：%s。云鳍与雾步的场地适性较高；白浪速度突出但稳定性偏低。" % game.weather))
+	var market_rows: Array = game.fish_market_rows()
+	if not market_rows.is_empty():
+		var top_fish: Dictionary = market_rows[0]
+		modal_body.add_child(_make_text("“鱼铺今天最醒目的报价是%s%d金贝。公开原因是：%s。”" % [str(top_fish["name"]), int(top_fish["quote"]), "；".join(top_fish["reasons"])], Color("bde4d7")))
 	modal_body.add_child(_make_button("查看岛报", _open_news))
 
 
@@ -678,7 +921,16 @@ func _open_milo() -> void:
 
 func _open_news() -> void:
 	_open_modal("《万物岛报》")
-	modal_body.add_child(_make_text("第%d日 · %s天 · 公开赛事观察" % [game.day, game.weather], Color("ffe7a6")))
+	modal_body.add_child(_make_text("第%d日 · %s · %s · 公开赛事与鱼市观察" % [game.day, game.weather, game.wind_direction], Color("ffe7a6")))
+	var fish_rows: Array = game.fish_market_rows()
+	if not fish_rows.is_empty():
+		modal_body.add_child(_make_text("蓝鳍鱼铺 · 当前重点行情", Color("9edfc4")))
+		for fish_index in range(mini(3, fish_rows.size())):
+			var fish_row: Dictionary = fish_rows[fish_index]
+			modal_body.add_child(_make_text("%s %d金贝 · 需求%d条 · %s" % [str(fish_row["name"]), int(fish_row["quote"]), int(fish_row["demand"]), "；".join(fish_row["reasons"])], Color("bfe2d7")))
+		modal_body.add_child(_make_button("前往蓝鳍鱼铺", _open_dive.bind("market")))
+	modal_body.add_child(HSeparator.new())
+	modal_body.add_child(_make_text("逐风竞速 · 八兽公开属性", Color("f0d27e")))
 	for index in range(game.RACE_BEASTS.size()):
 		var beast: Dictionary = game.RACE_BEASTS[index]
 		modal_body.add_child(_make_text("%s：速度%d / 耐力%d / 爆发%d / 稳定%d · 独胜参考 %.2f" % [
@@ -688,7 +940,7 @@ func _open_news() -> void:
 
 func _open_tower() -> void:
 	_open_modal("万象塔")
-	modal_body.add_child(_art_banner(IslandPanorama, 210.0))
+	modal_body.add_child(_art_banner(IslandGroundMap, 210.0))
 	var count: int = int(game.discovered_recipe_count())
 	modal_body.add_child(_make_text("塔身会回应你真正理解并留下的关系。当前谱系：%d / %d。" % [count, game.RECIPES.size()], Color("d8f4f8")))
 	var floors := [
@@ -846,22 +1098,22 @@ func _run_race() -> void:
 
 func _open_map() -> void:
 	_open_modal("岛屿地图")
-	modal_body.add_child(_art_banner(IslandPanorama, 230.0))
-	modal_body.add_child(_make_text("走到区域后即可永久发现。已发现区域之间快速移动不消耗潮刻。", Color("bde9f2")))
-	for area_name in ["漂流湾", "椰影街", "逐风海岸"]:
+	var overview = MapOverviewScript.new()
+	overview.setup(IslandGroundMap, discovered_areas, player.global_position)
+	modal_body.add_child(overview)
+	modal_body.add_child(_make_text("白圈是当前位置；彩色节点按运行时真实坐标叠在对应建筑入口上。走到区域后即可永久发现，已发现区域之间快速前往消耗0.25潮刻。", Color("bde9f2")))
+	for area_name in WorldLayoutScript.AREA_ORDER:
 		var unlocked := discovered_areas.has(area_name)
-		modal_body.add_child(_make_button(("前往 " if unlocked else "尚未发现 ") + area_name, _travel_to.bind(area_name), not unlocked))
+		var region: Dictionary = WorldLayoutScript.REGIONS[area_name]
+		var label := "%s%s · %s" % ["前往 " if unlocked else "尚未发现 ", area_name, str(region["subtitle"])]
+		modal_body.add_child(_make_button(label, _travel_to.bind(area_name), not unlocked))
 
 
 func _travel_to(area_name: String) -> void:
-	var positions := {
-		"漂流湾": Vector2(320, 360),
-		"椰影街": Vector2(900, 360),
-		"逐风海岸": Vector2(1450, 360)
-	}
-	if not discovered_areas.has(area_name) or not positions.has(area_name):
+	if not discovered_areas.has(area_name) or not WorldLayoutScript.REGIONS.has(area_name):
 		return
-	player.global_position = positions[area_name]
+	player.global_position = WorldLayoutScript.spawn_for_area(area_name)
 	current_area = area_name
+	game.advance_time_fraction(0.25, "区域快速前往")
 	_close_modal()
-	_show_toast("已快速前往%s；未消耗潮刻。" % area_name)
+	_show_toast("已快速前往%s；消耗0.25潮刻。" % area_name)

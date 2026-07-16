@@ -20,6 +20,7 @@ func _run() -> void:
 		root.size = viewport_size
 		var state = GameStateScript.new()
 		state.recording_enabled = false
+		state.rng.seed = 20260715
 		state.start_poker_hand()
 		var table = PokerTableScript.new()
 		table.animations_enabled = true
@@ -39,6 +40,20 @@ func _run() -> void:
 		var image := root.get_texture().get_image()
 		var file_name := "poker_fixed_stage_%dx%d.png" % [viewport_size.x, viewport_size.y]
 		assert(image.save_png(output_dir.path_join(file_name)) == OK, "The visual snapshot must be writable.")
+		if viewport_size == Vector2i(1280, 720):
+			table.animation_speed_scale = 2.0
+			var action_button := _find_call_button(table)
+			assert(action_button != null, "The poker action button must exist for the motion snapshot.")
+			action_button.pressed.emit()
+			await process_frame
+			assert(table.animation_busy and table.motion_layer.get_child_count() > 0, "A real poker action must create presentation proxies.")
+			var motion_image := root.get_texture().get_image()
+			assert(motion_image.save_png(output_dir.path_join("poker_shell_motion_1280x720.png")) == OK, "The poker motion snapshot must be writable.")
+			for _attempt in range(720):
+				if not table.animation_busy:
+					break
+				await process_frame
+			assert(not table.animation_busy, "The poker action presentation must complete without hanging.")
 		table.free()
 		await process_frame
 	print("POKER LAYOUT SNAPSHOT PASS")
@@ -52,3 +67,15 @@ func _tree_contains_class(node: Node, class_name_value: String) -> bool:
 		if _tree_contains_class(child, class_name_value):
 			return true
 	return false
+
+
+func _find_call_button(node: Node) -> Button:
+	if node is Button:
+		var button := node as Button
+		if button.text == "静观" or button.text.begins_with("跟契"):
+			return button
+	for child in node.get_children():
+		var found := _find_call_button(child)
+		if found != null:
+			return found
+	return null

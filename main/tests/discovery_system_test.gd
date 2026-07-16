@@ -183,11 +183,16 @@ func _test_full_screen_synthesis_ui() -> void:
 	scene._open_synthesis()
 	await process_frame
 	var table = scene.synthesis_table
+	table.animation_speed_scale = 4.0
 	assert(table.visible and not scene.modal_overlay.visible, "造化盆必须使用独立全屏页面而不是普通模态框")
 	assert(table.page_root != null and table.page_root.size.round() == Vector2(1280, 720), "造化盆全屏根节点必须覆盖1280×720视口")
 	assert(table.left_library != null and table.right_library != null, "独立页面必须建立左右两个万物图鉴")
 	assert(table.left_library.get_child_count() == 3 and table.right_library.get_child_count() == 3, "开局左右图鉴都必须只显示水、火、土")
 	assert(table.center_stage != null and not _has_ancestor_class(table.center_stage, "ScrollContainer"), "中央实验舞台必须固定且不能随图鉴滚动")
+	assert(table.motion_layer != null and table.motion_layer.name == "SynthesisMotionLayer", "中央实验舞台必须提供独立且不改写玩法状态的动画层")
+	for raw_recipe in table.game.RECIPES:
+		var relation := str(raw_recipe.get("relation", ""))
+		assert(table.RELATION_FAMILY_BY_LABEL.has(relation), "每一种真实合成关系都必须映射到明确的动画语法：%s" % relation)
 	assert(_tree_contains_text(table.page_root, "1阶 3/3") and _tree_contains_text(table.page_root, "4阶 0/55"), "顶部必须显式展示四阶发现进度")
 	var old_page: Control = table.page_root
 	var water_button := _find_button(table.left_library, "水")
@@ -201,7 +206,10 @@ func _test_full_screen_synthesis_ui() -> void:
 	assert(_tree_contains_text(table.center_stage, "首次尝试这段关系需要2金贝"), "中央舞台必须在提交前显示准确费用")
 	var result_page: Control = table.page_root
 	table.action_button.pressed.emit()
-	await create_timer(0.35).timeout
+	await process_frame
+	await process_frame
+	assert(table.busy and table.motion_layer.get_child_count() >= 2, "真实提交按钮信号必须启动双材料汇聚演出")
+	await create_timer(1.2).timeout
 	await process_frame
 	assert(table.page_root != result_page and table.game.is_discovered("steam"), "实验动画结束后必须延迟重建并安全显示新发现")
 	table._show_graph()

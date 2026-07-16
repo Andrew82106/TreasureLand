@@ -24,14 +24,16 @@ func _init() -> void:
 func _test_daily_limits_and_tiers() -> void:
 	var fishing_state = GameStateScript.new()
 	var tide_before: int = int(fishing_state.tide)
+	var cash_before_fishing: int = int(fishing_state.cash)
 	for _attempt in range(fishing_state.DAILY_FISHING_LIMIT):
-		assert(bool(fishing_state.fish_once().get("ok", false)), "每日限制内的浅滩采集必须成功")
-	var cash_after_limit: int = int(fishing_state.cash)
+		assert(bool(fishing_state.fish_once().get("ok", false)), "每日限制内的海岸潜捕必须成功")
+	assert(fishing_state.cash == cash_before_fishing and not fishing_state.fish_catch_inventory.is_empty(), "潜捕必须先生成独立鱼获，不能上岸后自动换成金贝")
+	var catches_after_limit: int = fishing_state.fish_catch_inventory.size()
 	var blocked: Dictionary = fishing_state.fish_once()
-	assert(not bool(blocked.get("ok", true)) and fishing_state.cash == cash_after_limit, "浅滩达到每日上限后不得继续刷出金贝")
+	assert(not bool(blocked.get("ok", true)) and fishing_state.fish_catch_inventory.size() == catches_after_limit, "潜捕达到每日窗口上限后不得继续生成鱼获")
 	assert(fishing_state.tide == tide_before + fishing_state.DAILY_FISHING_LIMIT, "被限制的额外点击不得继续消耗潮刻")
 	fishing_state.sleep_to_next_day()
-	assert(fishing_state.fishing_remaining_today() == fishing_state.DAILY_FISHING_LIMIT, "次日必须刷新浅滩采集次数")
+	assert(fishing_state.fishing_remaining_today() == fishing_state.DAILY_FISHING_LIMIT, "次日必须刷新有效鱼群窗口")
 
 	var poker_state = GameStateScript.new()
 	poker_state.cash = 10000
@@ -54,7 +56,7 @@ func _test_wealth_history_and_chart() -> void:
 	var after_buy := state.net_worth()
 	assert(after_buy == start_worth - 2, "基础实验必须准确降低2金贝净资产")
 	state.fish_once()
-	assert(state.net_worth() > after_buy and str(state.wealth_history[-1].get("reason", "")) == "浅滩采集", "采集收益必须推动财富曲线并记录来源")
+	assert(state.net_worth() > after_buy and str(state.wealth_history[-1].get("reason", "")) == "海岸潜捕 · 上岸", "鱼获估值必须推动财富曲线并记录来源")
 	var milestone: Dictionary = state.next_wealth_milestone()
 	assert(str(milestone.get("title", "")) == "学徒" and int(milestone.get("remaining", 0)) > 0, "财富页面必须给出下一头衔目标")
 	var chart = WealthChartScript.new()
@@ -187,6 +189,17 @@ func _test_poker_betting_state_machine() -> void:
 	assert(int(pots["payouts"][1]) == 58 and int(pots["payouts"][2]) == 60, "短筹码只能赢主池，边池必须由有资格者获得")
 	assert(_sum_int_array(pots["payouts"]) + _sum_int_array(pots["refunds"]) + int(pots["service_fee"]) == 150, "分池、返还与服务费之和必须等于总投入")
 
+	var next_round = GameStateScript.new()
+	next_round.recording_enabled = false
+	next_round.poker_test_passive_ai = true
+	next_round.start_poker_hand()
+	next_round.poker["dealer_seat"] = 0
+	next_round.poker["seats"][1]["folded"] = true
+	next_round.poker["seats"][2]["all_in"] = true
+	next_round._poker_open_next_round()
+	assert(int(next_round.poker["first_actor_seat"]) == 3 and int(next_round.poker["current_actor"]) == 3, "新阶段首位行动标签和实际行动者必须跳过已退契、已全投席位")
+	assert(str(next_round.poker["action_log"][-1]).contains("米娅"), "新阶段日志必须显示真正能够行动的首位席位")
+
 	for index in range(seats.size()):
 		seats[index]["hand_commit"] = 1 if index < 3 else 0
 		seats[index]["folded"] = index == 2 or index >= 3
@@ -290,6 +303,7 @@ func _test_oracle_record_file() -> void:
 func _test_oracle_record_window() -> void:
 	var state = GameStateScript.new()
 	state.recording_enabled = false
+	state.poker_test_passive_ai = true
 	state.start_poker_hand()
 	for _round in range(4):
 		if not bool(state.poker.get("completed", false)):

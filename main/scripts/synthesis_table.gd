@@ -6,6 +6,26 @@ const MaterialAtlas = preload("res://assets/art/shop_material_atlas_v1.png")
 const CreationAtlas = preload("res://assets/art/synthesis_collection_atlas_v1.png")
 const IslandBackdrop = preload("res://assets/art/island_panorama_v1.png")
 const BasinBackdrop = preload("res://assets/art/synthesis_basin_backdrop_v1.svg")
+const RelationVfxScript = preload("res://scripts/synthesis_relation_vfx.gd")
+
+const RELATION_FAMILY_BY_LABEL := {
+	"聚集": "converge", "汇聚": "converge", "混合": "converge", "调和": "converge",
+	"蓄积": "converge", "蓄压": "converge", "容纳": "converge", "约束": "converge",
+	"封堵": "converge", "固岸": "converge", "附着": "converge", "嵌合": "converge",
+	"熔合": "converge", "铺展": "converge", "分层": "converge", "裹挟": "converge",
+	"相变": "thermal", "冷凝": "thermal", "冷却": "thermal", "增温": "thermal",
+	"保温": "thermal", "聚热": "thermal", "围火": "thermal", "烧结": "thermal",
+	"烘结": "thermal", "蒸干": "thermal", "激发": "thermal", "催化": "thermal",
+	"做功": "thermal", "转化": "thermal", "放电": "thermal",
+	"导流": "flow", "渗流": "flow", "渗压": "flow", "冲刷": "flow",
+	"侵蚀": "flow", "磨蚀": "flow", "悬浮": "flow", "降水": "flow", "对流": "flow",
+	"喷发": "burst", "释放": "burst", "冲击": "burst", "卷扬": "burst", "抬升": "burst",
+	"地貌": "geology", "沉积": "geology", "堆积": "geology", "富集": "geology",
+	"压积": "geology", "压实": "geology", "配土": "geology", "整平": "geology",
+	"滞水": "geology", "侵入": "geology",
+	"塑形": "craft", "模制": "craft",
+	"生境": "life", "孕育": "life", "滋养": "life", "适应": "life",
+}
 
 var game
 var left_id: String = ""
@@ -18,6 +38,11 @@ var rebuild_queued: bool = false
 var pulse_after_rebuild: bool = false
 var strong_pulse_after_rebuild: bool = false
 var center_pulse_tween: Tween
+var presentation_tween: Tween
+var presentation_generation: int = 0
+var animations_enabled: bool = true
+var reduced_motion: bool = false
+var animation_speed_scale: float = 1.0
 
 var page_root: Control
 var left_library: GridContainer
@@ -26,6 +51,9 @@ var center_stage: PanelContainer
 var action_button: Button
 var status_label: Label
 var graph_overlay: ColorRect
+var motion_layer: Control
+var left_input_card: Control
+var right_input_card: Control
 
 
 func setup(state) -> void:
@@ -59,11 +87,22 @@ func request_close() -> void:
 
 
 func _rebuild() -> void:
+	presentation_generation += 1
+	if presentation_tween != null and presentation_tween.is_valid():
+		presentation_tween.kill()
+	presentation_tween = null
 	if center_pulse_tween != null and center_pulse_tween.is_valid():
 		center_pulse_tween.kill()
 	center_pulse_tween = null
+	motion_layer = null
+	left_input_card = null
+	right_input_card = null
 	for child in get_children():
-		child.free()
+		# A rebuild can be requested by a Button signal. Removing the old tree
+		# immediately keeps it out of layout/input, while queue_free() guarantees
+		# the signal emitter stays alive until Godot has finished dispatching.
+		remove_child(child)
+		child.queue_free()
 	page_root = ColorRect.new()
 	page_root.color = Color("08191f")
 	page_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -182,7 +221,7 @@ func _build_library_panel(side: String) -> PanelContainer:
 	for option_name in ["全部阶层", "一阶 · 根源", "二阶 · 反应", "三阶 · 环境与工艺", "四阶 · 世界成形"]:
 		filter.add_item(option_name)
 	filter.select(left_tier_filter if side == "left" else right_tier_filter)
-	filter.item_selected.connect(_set_tier_filter.bind(side))
+	filter.item_selected.connect(_set_tier_filter.bind(side), CONNECT_DEFERRED)
 	box.add_child(filter)
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -285,6 +324,13 @@ func _build_center_stage() -> PanelContainer:
 	action_row.add_child(_button("清空", _clear_selection, busy or not ready, 82))
 	box.add_child(action_row)
 	box.add_child(_label("折扣凭证 %d次 · 历史组合永久免费复查" % game.synthesis_discount_uses, Color("9bb9b7"), 14))
+	motion_layer = Control.new()
+	motion_layer.name = "SynthesisMotionLayer"
+	motion_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	motion_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	motion_layer.clip_contents = true
+	motion_layer.z_index = 30
+	stage_root.add_child(motion_layer)
 	return center_stage
 
 
@@ -292,9 +338,11 @@ func _build_selection_relation() -> HBoxContainer:
 	var relation := HBoxContainer.new()
 	relation.alignment = BoxContainer.ALIGNMENT_CENTER
 	relation.add_theme_constant_override("separation", 11)
-	relation.add_child(_selected_card(left_id, "左槽"))
+	left_input_card = _selected_card(left_id, "左槽")
+	relation.add_child(left_input_card)
 	relation.add_child(_relation_symbol("＋"))
-	relation.add_child(_selected_card(right_id, "右槽"))
+	right_input_card = _selected_card(right_id, "右槽")
+	relation.add_child(right_input_card)
 	return relation
 
 
@@ -508,17 +556,212 @@ func _submit() -> void:
 	if busy or left_id.is_empty() or right_id.is_empty():
 		return
 	busy = true
+	presentation_generation += 1
+	var generation := presentation_generation
+	var submitted_left := left_id
+	var submitted_right := right_id
 	if action_button != null:
 		action_button.disabled = true
 	if status_label != null:
-		status_label.text = "造化盆正在辨认这段关系……"
-	var tween := create_tween()
-	tween.tween_property(center_stage, "modulate", Color("fff1a8"), 0.12)
-	tween.tween_property(center_stage, "modulate", Color.WHITE, 0.12)
-	await tween.finished
-	last_result = game.synthesize_pair(left_id, right_id)
+		status_label.text = "两项万物正在进入造化盆……"
+	# Resolve exactly once before presentation. Animation reveals this immutable
+	# result and can never change recipes, currency, or discovery state.
+	last_result = game.synthesize_pair(submitted_left, submitted_right)
+	if animations_enabled and is_inside_tree():
+		await get_tree().process_frame
+		if _presentation_alive(generation):
+			await _play_synthesis_presentation(generation, submitted_left, submitted_right, last_result)
+	if not _presentation_alive(generation):
+		return
 	busy = false
 	_queue_rebuild(true, true)
+
+
+func _play_synthesis_presentation(
+	generation: int,
+	submitted_left: String,
+	submitted_right: String,
+	result: Dictionary
+) -> void:
+	if motion_layer == null or not is_instance_valid(motion_layer):
+		return
+	var left_start := _control_center_in_motion(left_input_card, Vector2(motion_layer.size.x * 0.31, motion_layer.size.y * 0.48))
+	var right_start := _control_center_in_motion(right_input_card, Vector2(motion_layer.size.x * 0.69, motion_layer.size.y * 0.48))
+	var basin_center := motion_layer.size * Vector2(0.5, 0.47)
+	var left_proxy := _motion_card(submitted_left, left_start)
+	var right_proxy := _motion_card(submitted_right, right_start)
+	left_proxy.z_index = 2
+	right_proxy.z_index = 2
+	if left_input_card != null and is_instance_valid(left_input_card):
+		left_input_card.modulate.a = 0.26
+	if right_input_card != null and is_instance_valid(right_input_card):
+		right_input_card.modulate.a = 0.26
+	var approach_duration := _animation_duration(0.34 if not reduced_motion else 0.16)
+	presentation_tween = create_tween().bind_node(self).set_parallel(true)
+	presentation_tween.tween_method(
+		_set_motion_arc.bind(left_proxy, left_start, basin_center + Vector2(-22.0, 0.0), -38.0),
+		0.0, 1.0, approach_duration
+	).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+	presentation_tween.tween_method(
+		_set_motion_arc.bind(right_proxy, right_start, basin_center + Vector2(22.0, 0.0), 38.0),
+		0.0, 1.0, approach_duration
+	).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+	presentation_tween.tween_property(left_proxy, "scale", Vector2(0.64, 0.64), approach_duration).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	presentation_tween.tween_property(right_proxy, "scale", Vector2(0.64, 0.64), approach_duration).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	await presentation_tween.finished
+	if not _presentation_alive(generation):
+		return
+	var successful := bool(result.get("ok", false)) and bool(result.get("success", false))
+	var relation_family := _relation_family(str(result.get("relation", "")), successful)
+	var effect = RelationVfxScript.new()
+	effect.name = "RelationshipMotion"
+	effect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	effect.z_index = 1
+	effect.configure(
+		relation_family,
+		_item_motion_color(submitted_left),
+		_item_motion_color(submitted_right),
+		successful,
+		reduced_motion
+	)
+	motion_layer.add_child(effect)
+	motion_layer.move_child(effect, 0)
+	if status_label != null and is_instance_valid(status_label):
+		status_label.text = "%s正在发生……" % str(result.get("relation", "关系")) if successful else "两项万物正在寻找稳定关系……"
+	var is_repeat := bool(result.get("repeat", false))
+	var effect_duration := 0.40 if is_repeat else (0.64 if successful else 0.50)
+	effect_duration = _animation_duration(effect_duration if not reduced_motion else 0.24)
+	presentation_tween = create_tween().bind_node(self).set_parallel(true)
+	presentation_tween.tween_property(effect, "progress", 1.0, effect_duration).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN_OUT)
+	presentation_tween.tween_property(left_proxy, "modulate:a", 0.0, effect_duration * 0.52).set_delay(effect_duration * 0.28)
+	presentation_tween.tween_property(right_proxy, "modulate:a", 0.0, effect_duration * 0.52).set_delay(effect_duration * 0.28)
+	await presentation_tween.finished
+	if not _presentation_alive(generation):
+		return
+	left_proxy.queue_free()
+	right_proxy.queue_free()
+	if successful:
+		await _reveal_synthesis_result(generation, str(result.get("output", "")), bool(result.get("first_discovery", false)), is_repeat)
+	else:
+		await _reveal_unstable_result(generation, result)
+	if is_instance_valid(effect):
+		effect.queue_free()
+
+
+func _reveal_synthesis_result(generation: int, output_id: String, first_discovery: bool, is_repeat: bool) -> void:
+	if output_id.is_empty() or motion_layer == null:
+		return
+	var result_card := _motion_card(output_id, motion_layer.size * Vector2(0.5, 0.46), "新发现" if first_discovery else "已验证")
+	result_card.z_index = 3
+	result_card.scale = Vector2(0.34, 0.34)
+	result_card.modulate.a = 0.0
+	var duration := _animation_duration(0.24 if is_repeat else (0.38 if not reduced_motion else 0.20))
+	presentation_tween = create_tween().bind_node(self).set_parallel(true)
+	presentation_tween.tween_property(result_card, "scale", Vector2.ONE, duration).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	presentation_tween.tween_property(result_card, "modulate:a", 1.0, duration * 0.72)
+	presentation_tween.tween_property(result_card, "position:y", result_card.position.y - 6.0, duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	await presentation_tween.finished
+	if not _presentation_alive(generation):
+		return
+	if status_label != null and is_instance_valid(status_label):
+		status_label.text = ("新发现 · %s" if first_discovery else "已验证 · %s") % game.item_name(output_id)
+	await get_tree().create_timer(_animation_duration(0.22 if is_repeat else 0.34)).timeout
+	if is_instance_valid(result_card):
+		result_card.queue_free()
+
+
+func _reveal_unstable_result(generation: int, result: Dictionary) -> void:
+	if motion_layer == null:
+		return
+	var badge := PanelContainer.new()
+	badge.name = "UnstableRelationBadge"
+	badge.custom_minimum_size = Vector2(236, 84)
+	badge.size = Vector2(236, 84)
+	badge.position = motion_layer.size * Vector2(0.5, 0.48) - badge.size * 0.5
+	badge.pivot_offset = badge.size * 0.5
+	badge.scale = Vector2(0.82, 0.82)
+	badge.modulate.a = 0.0
+	badge.z_index = 3
+	badge.add_theme_stylebox_override("panel", _panel_style(Color("21373ad9"), Color("a99578"), 10))
+	var copy := VBoxContainer.new()
+	copy.alignment = BoxContainer.ALIGNMENT_CENTER
+	badge.add_child(copy)
+	var title := _label("未成 · %s" % str(result.get("failure_title", "关系未稳")), Color("e7d0a7"), 18)
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	copy.add_child(title)
+	var hint := _label("两项万物保留，实验关系已记录", Color("9fb9b5"), 13)
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	copy.add_child(hint)
+	motion_layer.add_child(badge)
+	var duration := _animation_duration(0.28 if not reduced_motion else 0.16)
+	presentation_tween = create_tween().bind_node(self).set_parallel(true)
+	presentation_tween.tween_property(badge, "scale", Vector2.ONE, duration).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	presentation_tween.tween_property(badge, "modulate:a", 1.0, duration)
+	await presentation_tween.finished
+	if not _presentation_alive(generation):
+		return
+	if status_label != null and is_instance_valid(status_label):
+		status_label.text = str(result.get("failure_title", "这段关系没有稳定下来。"))
+	await get_tree().create_timer(_animation_duration(0.32)).timeout
+	if is_instance_valid(badge):
+		badge.queue_free()
+
+
+func _motion_card(item_id: String, center_value: Vector2, caption: String = "") -> Control:
+	var card := _selected_card(item_id, caption)
+	card.custom_minimum_size = Vector2(112, 152)
+	card.size = Vector2(112, 152)
+	card.position = center_value - card.size * 0.5
+	card.pivot_offset = card.size * 0.5
+	card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	motion_layer.add_child(card)
+	return card
+
+
+func _control_center_in_motion(control: Control, fallback: Vector2) -> Vector2:
+	if control == null or not is_instance_valid(control) or motion_layer == null:
+		return fallback
+	return control.global_position + control.size * 0.5 - motion_layer.global_position
+
+
+func _set_motion_arc(progress_value: float, node: Control, start: Vector2, finish: Vector2, arc_height: float) -> void:
+	if node == null or not is_instance_valid(node):
+		return
+	var t := clampf(progress_value, 0.0, 1.0)
+	var control_point := (start + finish) * 0.5 + Vector2(0.0, arc_height)
+	var center_value := start * ((1.0 - t) * (1.0 - t)) + control_point * (2.0 * (1.0 - t) * t) + finish * (t * t)
+	node.position = center_value - node.size * 0.5
+	node.rotation = deg_to_rad(lerpf(-3.0 if arc_height < 0.0 else 3.0, 0.0, t))
+
+
+func _relation_family(relation: String, successful: bool) -> String:
+	if not successful:
+		return "unstable"
+	return str(RELATION_FAMILY_BY_LABEL.get(relation, "converge"))
+
+
+func _item_motion_color(item_id: String) -> Color:
+	if item_id == "water":
+		return Color("64bbca")
+	if item_id == "fire":
+		return Color("e1844f")
+	if item_id == "earth":
+		return Color("b79a62")
+	var category := str(game.ITEMS.get(item_id, {}).get("category", ""))
+	return {
+		"天象": Color("8fc8d4"), "气候": Color("8fc8d4"), "水系": Color("61aeba"),
+		"地貌": Color("aa9568"), "地质": Color("aa9568"), "生境": Color("79ae72"),
+		"生命": Color("77b878"), "材料": Color("c19b70"), "工艺": Color("d39b69"),
+		"机械": Color("c8b66d"), "原理": Color("d7b85c"),
+	}.get(category, Color("83b8ad"))
+
+
+func _animation_duration(base_duration: float) -> float:
+	return base_duration / maxf(0.1, animation_speed_scale)
+
+
+func _presentation_alive(generation: int) -> bool:
+	return generation == presentation_generation and is_inside_tree() and visible
 
 
 func _pulse_center(strong: bool = false) -> void:
@@ -589,7 +832,11 @@ func _button(text_value: String, action: Callable, disabled_value: bool, width: 
 	button.add_theme_stylebox_override("hover", _button_style(Color("38616a"), Color("a5c5bb")))
 	button.add_theme_stylebox_override("pressed", _button_style(Color("1c343b"), Color("e5cd78")))
 	button.add_theme_stylebox_override("disabled", _button_style(Color("20343a"), Color("3e5559")))
-	button.pressed.connect(action)
+	# Every button lives inside a tree that may be rebuilt by its own action.
+	# Defer the callback so no action can detach or replace controls while the
+	# native BaseButton signal is still being emitted (Godot 4.7 can otherwise
+	# terminate with Object freed while a signal is being emitted).
+	button.pressed.connect(action, CONNECT_DEFERRED)
 	return button
 
 

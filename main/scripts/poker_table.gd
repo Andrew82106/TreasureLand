@@ -5,7 +5,6 @@ signal closed
 
 const CardScript = preload("res://scripts/oracle_card.gd")
 const PokerNpcAvatarScript = preload("res://scripts/poker_npc_avatar.gd")
-const NpcPortraitAtlas = preload("res://assets/art/poker_npc_portraits_v1.png")
 const OracleTableBackdrop = preload("res://assets/art/oracle_table_backdrop_v1.png")
 
 var game
@@ -35,6 +34,12 @@ var action_overrides: Array[String] = ["", "", "", "", ""]
 var speech_bubbles: Array[String] = ["", "", "", "", ""]
 var animation_visible_community_count: int = -1
 var last_visible_community_count: int = 0
+var motion_layer: Control
+var presentation_generation: int = 0
+var active_presentation_tween: Tween
+var animation_speed_scale: float = 1.0
+var reduced_motion: bool = false
+var dealt_card_counts: Array[int] = [2, 2, 2, 2, 2, 2]
 
 
 func setup(game_state) -> void:
@@ -52,6 +57,13 @@ func _ready() -> void:
 	visible = false
 
 
+func _exit_tree() -> void:
+	presentation_generation += 1
+	if active_presentation_tween != null and active_presentation_tween.is_valid():
+		active_presentation_tween.kill()
+	active_presentation_tween = null
+
+
 func open(message: String = "") -> void:
 	_ensure_built()
 	footer_message = message
@@ -60,6 +72,8 @@ func open(message: String = "") -> void:
 
 
 func request_close() -> void:
+	if animation_busy:
+		return
 	if records_overlay != null and records_overlay.visible:
 		_hide_records()
 		return
@@ -390,6 +404,13 @@ func _build_fixed_table_stage() -> void:
 		var speech_slot := _stage_slot(speech_layer, speech_rects[index], "SpeechSlot%d" % index)
 		speech_slot.visible = false
 		speech_slots.append(speech_slot)
+	motion_layer = Control.new()
+	motion_layer.name = "TableMotionLayer"
+	motion_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	motion_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	motion_layer.clip_contents = true
+	motion_layer.z_index = 40
+	center_stage.add_child(motion_layer)
 
 
 func _stage_slot(parent: Control, normalized_rect: Rect2, slot_name: String) -> Control:
@@ -553,11 +574,14 @@ func _opponent_seat(index: int, compact_layout: bool = false) -> Control:
 	cards.add_theme_constant_override("separation", 4)
 	var revealed_hand := _revealed_opponent_hand(index)
 	for card_index in range(2):
-		var card_id := int(revealed_hand[card_index]) if revealed_hand.size() == 2 else -1
-		var card_control := _card(card_id, revealed_hand.size() == 2, false, true)
-		if compact_layout:
-			card_control.custom_minimum_size = Vector2(46, 66)
-		cards.add_child(card_control)
+		if index + 1 < dealt_card_counts.size() and card_index >= int(dealt_card_counts[index + 1]):
+			cards.add_child(_empty_card_space(Vector2(46, 66) if compact_layout else Vector2(58, 82)))
+		else:
+			var card_id := int(revealed_hand[card_index]) if revealed_hand.size() == 2 else -1
+			var card_control := _card(card_id, revealed_hand.size() == 2, false, true)
+			if compact_layout:
+				card_control.custom_minimum_size = Vector2(46, 66)
+			cards.add_child(card_control)
 	box.add_child(cards)
 	return panel
 
@@ -614,8 +638,11 @@ func _player_seat() -> Control:
 		hand_row.add_child(_card(-1, false))
 		hand_row.add_child(_card(-1, false))
 	else:
-		for card_id in game.poker["player_hand"]:
-			hand_row.add_child(_card(int(card_id), true, true))
+		for card_index in range(2):
+			if card_index >= int(dealt_card_counts[0]):
+				hand_row.add_child(_empty_card_space(Vector2(82, 116)))
+			else:
+				hand_row.add_child(_card(int(game.poker["player_hand"][card_index]), true, true))
 	row.add_child(hand_row)
 	var reading_box := VBoxContainer.new()
 	reading_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -738,32 +765,62 @@ func _start_hand() -> void:
 	if not animations_enabled or not bool(result.get("ok", false)) or not is_inside_tree():
 		_refresh()
 		return
+	var generation := _begin_presentation()
 	var final_actions: Array = game.poker.get("opponent_actions", ["等待", "等待", "等待", "等待", "等待"]).duplicate()
 	var action_sequence: Array = result.get("npc_action_sequence", [])
 	animation_busy = true
 	animation_visible_community_count = 0
+	dealt_card_counts.fill(0)
 	for index in range(5):
 		action_overrides[index] = "整理命牌"
+	_refresh()
+	var small_blind_seat := int(game.poker.get("small_blind_seat", -1))
+	var big_blind_seat := int(game.poker.get("big_blind_seat", -1))
+	if small_blind_seat >= 0:
+		await _animate_shell_transfer(generation, small_blind_seat, int(game.poker.get("small_blind", 1)), true)
+	if not _presentation_alive(generation):
+		return
+	if big_blind_seat >= 0:
+		await _animate_shell_transfer(generation, big_blind_seat, int(game.poker.get("big_blind", 2)), true)
+	if not _presentation_alive(generation):
+		return
+	await _animate_initial_deal(generation)
+	if not _presentation_alive(generation):
+		return
+	dealt_card_counts.fill(2)
 	_refresh()
 	for raw_event in action_sequence:
 		var event: Dictionary = raw_event
 		var index := int(event.get("npc_index", -1))
 		if index < 0 or index >= 5:
 			continue
+		await _animate_community_to(generation, _community_count_for_stage(str(event.get("stage", "藏命"))))
+		if not _presentation_alive(generation):
+			return
 		thinking_index = index
 		action_overrides[index] = "入席中……"
 		speech_bubbles[index] = ""
 		_refresh()
-		await get_tree().create_timer(0.30 + float(index % 2) * 0.08).timeout
-		if not is_instance_valid(self) or not is_inside_tree():
+		await get_tree().create_timer(_animation_duration(0.30 + float(index % 2) * 0.08)).timeout
+		if not _presentation_alive(generation):
 			return
 		thinking_index = -1
 		var action_text := str(event.get("action_text", final_actions[index]))
 		action_overrides[index] = action_text
 		speech_bubbles[index] = _npc_line(index, action_text, false)
 		_refresh()
-		await get_tree().create_timer(0.52).timeout
-		if not is_instance_valid(self) or not is_inside_tree():
+		await _animate_action_effect(generation, index + 1, event)
+		if not _presentation_alive(generation):
+			return
+		await get_tree().create_timer(_animation_duration(0.16)).timeout
+		if not _presentation_alive(generation):
+			return
+	await _animate_community_to(generation, game.poker_visible_community().size())
+	if not _presentation_alive(generation):
+		return
+	if bool(game.poker.get("completed", false)):
+		await _animate_settlement(generation)
+		if not _presentation_alive(generation):
 			return
 	animation_busy = false
 	animation_visible_community_count = -1
@@ -775,12 +832,15 @@ func _act(action: String, raise_amount: int = 0) -> void:
 	if animation_busy:
 		return
 	var visible_before := _visible_community_for_view().size()
+	var player_invested_before := _player_invested()
 	var previous_actions: Array = game.poker.get("opponent_actions", ["等待", "等待", "等待", "等待", "等待"]).duplicate()
 	var result: Dictionary = game.poker_action(action, raise_amount)
 	footer_message = "" if bool(result.get("completed", false)) else str(result["text"])
-	if action == "fold" or not animations_enabled or not bool(result.get("ok", true)) or not is_inside_tree():
+	if not animations_enabled or not bool(result.get("ok", true)) or not is_inside_tree():
 		_refresh()
 		return
+	var generation := _begin_presentation()
+	var player_paid := maxi(0, _player_invested() - player_invested_before)
 	var final_actions: Array = game.poker.get("opponent_actions", previous_actions).duplicate()
 	var action_sequence: Array = result.get("npc_action_sequence", [])
 	animation_busy = true
@@ -789,31 +849,423 @@ func _act(action: String, raise_amount: int = 0) -> void:
 		action_overrides[index] = str(previous_actions[index]) if index < previous_actions.size() else "等待"
 		speech_bubbles[index] = ""
 	_refresh()
+	if player_paid > 0:
+		await _animate_shell_transfer(generation, 0, player_paid, true)
+	elif action == "fold":
+		await _animate_fold_cards(generation, 0)
+	else:
+		await _animate_seat_pulse(generation, 0, Color("7fc7bd"))
+	if not _presentation_alive(generation):
+		return
 	for raw_event in action_sequence:
 		var event: Dictionary = raw_event
 		var index := int(event.get("npc_index", -1))
 		if index < 0 or index >= 5:
 			continue
+		await _animate_community_to(generation, _community_count_for_stage(str(event.get("stage", "藏命"))))
+		if not _presentation_alive(generation):
+			return
 		thinking_index = index
 		action_overrides[index] = "思考中……"
 		speech_bubbles[index] = ""
 		_refresh()
-		await get_tree().create_timer(_npc_think_delay(index, str(final_actions[index]))).timeout
-		if not is_instance_valid(self) or not is_inside_tree():
+		var action_text := str(event.get("action_text", final_actions[index]))
+		await get_tree().create_timer(_animation_duration(_npc_think_delay(index, action_text))).timeout
+		if not _presentation_alive(generation):
 			return
 		thinking_index = -1
-		var action_text := str(event.get("action_text", final_actions[index]))
 		var display_action := "回应加契 · %s" % action_text if int(event.get("action_number", 1)) > 1 else action_text
 		action_overrides[index] = display_action
 		speech_bubbles[index] = _npc_line(index, display_action, false)
 		_refresh()
-		await get_tree().create_timer(0.52).timeout
-		if not is_instance_valid(self) or not is_inside_tree():
+		await _animate_action_effect(generation, index + 1, event)
+		if not _presentation_alive(generation):
+			return
+		await get_tree().create_timer(_animation_duration(0.16)).timeout
+		if not _presentation_alive(generation):
+			return
+	await _animate_community_to(generation, game.poker_visible_community().size())
+	if not _presentation_alive(generation):
+		return
+	if bool(result.get("completed", false)) or bool(game.poker.get("completed", false)):
+		await _animate_settlement(generation)
+		if not _presentation_alive(generation):
 			return
 	animation_busy = false
 	animation_visible_community_count = -1
 	_reset_animation_state()
 	_refresh()
+
+
+func _begin_presentation() -> int:
+	presentation_generation += 1
+	if active_presentation_tween != null and active_presentation_tween.is_valid():
+		active_presentation_tween.kill()
+	active_presentation_tween = null
+	if motion_layer != null and is_instance_valid(motion_layer):
+		_clear(motion_layer)
+	return presentation_generation
+
+
+func _presentation_alive(generation: int) -> bool:
+	return generation == presentation_generation and is_inside_tree() and visible
+
+
+func _animation_duration(base_duration: float) -> float:
+	return base_duration / maxf(0.1, animation_speed_scale)
+
+
+func _animate_initial_deal(generation: int) -> void:
+	if motion_layer == null or game.poker.is_empty():
+		return
+	var dealer := int(game.poker.get("dealer_seat", 0))
+	var order: Array[int] = []
+	for offset in range(1, 7):
+		order.append(posmod(dealer + offset, 6))
+	var proxies: Array[Control] = []
+	var duration := _animation_duration(0.24 if not reduced_motion else 0.13)
+	var stagger := _animation_duration(0.055 if not reduced_motion else 0.025)
+	active_presentation_tween = create_tween().bind_node(self).set_parallel(true)
+	var sequence_index := 0
+	for round_index in range(2):
+		for seat_index in order:
+			var card_id := int(game.poker["player_hand"][round_index]) if seat_index == 0 else int(game.poker["opponent_hands"][seat_index - 1][round_index])
+			var proxy := _motion_card(card_id, seat_index == 0, _deck_anchor(), Vector2(48, 68))
+			proxy.rotation = deg_to_rad(-7.0)
+			proxies.append(proxy)
+			var delay := float(sequence_index) * stagger
+			active_presentation_tween.tween_method(
+				_set_motion_arc.bind(proxy, _deck_anchor(), _seat_card_anchor(seat_index, round_index), -34.0 if seat_index <= 2 else 34.0),
+				0.0, 1.0, duration
+			).set_delay(delay).set_trans(Tween.TRANS_QUART).set_ease(Tween.EASE_OUT)
+			active_presentation_tween.tween_property(proxy, "modulate:a", 1.0, duration * 0.6).set_delay(delay)
+			sequence_index += 1
+	await active_presentation_tween.finished
+	if not _presentation_alive(generation):
+		return
+	dealt_card_counts.fill(2)
+	_refresh()
+	for proxy in proxies:
+		if is_instance_valid(proxy):
+			proxy.queue_free()
+
+
+func _animate_community_to(generation: int, requested_count: int) -> void:
+	if game.poker.is_empty():
+		return
+	var available: int = int(game.poker_visible_community().size())
+	var target_count := mini(requested_count, available)
+	var current_count := maxi(0, animation_visible_community_count)
+	while current_count < target_count:
+		await _animate_community_card(generation, current_count)
+		if not _presentation_alive(generation):
+			return
+		current_count += 1
+		animation_visible_community_count = current_count
+		last_visible_community_count = current_count
+		_refresh()
+
+
+func _animate_community_card(generation: int, card_index: int) -> void:
+	if motion_layer == null or card_index < 0 or card_index >= 5:
+		return
+	var card_id := int(game.poker["community"][card_index])
+	var proxy := _motion_card(card_id, false, _deck_anchor(), Vector2(62, 88))
+	proxy.rotation = deg_to_rad(-6.0 + float(card_index) * 2.0)
+	var travel_duration := _animation_duration(0.20 if not reduced_motion else 0.11)
+	active_presentation_tween = create_tween().bind_node(self)
+	active_presentation_tween.tween_method(
+		_set_motion_arc.bind(proxy, _deck_anchor(), _board_card_anchor(card_index), -30.0),
+		0.0, 1.0, travel_duration
+	).set_trans(Tween.TRANS_QUART).set_ease(Tween.EASE_OUT)
+	await active_presentation_tween.finished
+	if not _presentation_alive(generation):
+		return
+	if reduced_motion:
+		proxy.setup(game, card_id, true, false, true)
+		proxy.queue_redraw()
+	else:
+		active_presentation_tween = create_tween().bind_node(self)
+		active_presentation_tween.tween_property(proxy, "scale", Vector2(0.06, 1.0), _animation_duration(0.08)).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		await active_presentation_tween.finished
+		if not _presentation_alive(generation):
+			return
+		proxy.setup(game, card_id, true, false, true)
+		proxy.queue_redraw()
+		active_presentation_tween = create_tween().bind_node(self)
+		active_presentation_tween.tween_property(proxy, "scale", Vector2.ONE, _animation_duration(0.14)).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		await active_presentation_tween.finished
+		if not _presentation_alive(generation):
+			return
+	await _animate_omen_echo(generation, card_id, _board_card_anchor(card_index))
+	if is_instance_valid(proxy):
+		proxy.queue_free()
+
+
+func _animate_omen_echo(generation: int, card_id: int, center_value: Vector2) -> void:
+	if motion_layer == null:
+		return
+	var is_water: bool = int(game.oracle_card_element(card_id)) == 0
+	var echo := _label("○" if is_water else "△", 38, Color("72c6d3") if is_water else Color("e58955"))
+	echo.name = "WaterOmenEcho" if is_water else "FireOmenEcho"
+	echo.size = Vector2(58, 58)
+	echo.position = center_value - echo.size * 0.5
+	echo.pivot_offset = echo.size * 0.5
+	echo.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	echo.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	echo.scale = Vector2(0.45, 0.45)
+	echo.modulate.a = 0.76
+	motion_layer.add_child(echo)
+	active_presentation_tween = create_tween().bind_node(self).set_parallel(true)
+	active_presentation_tween.tween_property(echo, "scale", Vector2(1.45, 1.45), _animation_duration(0.24)).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	active_presentation_tween.tween_property(echo, "modulate:a", 0.0, _animation_duration(0.24))
+	await active_presentation_tween.finished
+	if not _presentation_alive(generation):
+		return
+	if is_instance_valid(echo):
+		echo.queue_free()
+
+
+func _animate_action_effect(generation: int, seat_index: int, event: Dictionary) -> void:
+	var paid := int(event.get("paid", 0))
+	var action := str(event.get("action", ""))
+	if paid > 0:
+		await _animate_shell_transfer(generation, seat_index, paid, true)
+	elif action == "fold" or str(event.get("action_text", "")).contains("退契"):
+		await _animate_fold_cards(generation, seat_index)
+	else:
+		await _animate_seat_pulse(generation, seat_index, Color("78bdb3"))
+
+
+func _animate_shell_transfer(generation: int, seat_index: int, amount: int, into_pot: bool) -> void:
+	if motion_layer == null or amount <= 0:
+		return
+	if reduced_motion:
+		await _animate_seat_pulse(generation, seat_index, Color("e3c66e"))
+		return
+	var start := _seat_anchor(seat_index) if into_pot else _pot_anchor()
+	var finish := _pot_anchor() if into_pot else _seat_anchor(seat_index)
+	var token_count := _shell_proxy_count(amount)
+	var tokens: Array[Control] = []
+	var duration := _animation_duration(0.28)
+	var stagger := _animation_duration(0.035)
+	active_presentation_tween = create_tween().bind_node(self).set_parallel(true)
+	for index in range(token_count):
+		var token := _shell_token(amount, index)
+		token.position = start - token.size * 0.5 + Vector2(float(index % 3 - 1) * 5.0, float(index / 3) * 4.0)
+		tokens.append(token)
+		var delay := float(index) * stagger
+		var arc := (-30.0 - float(index) * 3.0) if into_pot else (28.0 + float(index) * 3.0)
+		active_presentation_tween.tween_method(
+			_set_motion_arc.bind(token, start, finish, arc),
+			0.0, 1.0, duration
+		).set_delay(delay).set_trans(Tween.TRANS_QUART).set_ease(Tween.EASE_OUT)
+		active_presentation_tween.tween_property(token, "modulate:a", 0.0, duration * 0.28).set_delay(delay + duration * 0.72)
+	await active_presentation_tween.finished
+	if not _presentation_alive(generation):
+		return
+	for token in tokens:
+		if is_instance_valid(token):
+			token.queue_free()
+	await _animate_seat_pulse(generation, seat_index if not into_pot else -1, Color("e3c66e"))
+
+
+func _animate_fold_cards(generation: int, seat_index: int) -> void:
+	if motion_layer == null:
+		return
+	var proxies: Array[Control] = []
+	var duration := _animation_duration(0.26 if not reduced_motion else 0.13)
+	active_presentation_tween = create_tween().bind_node(self).set_parallel(true)
+	for card_index in range(2):
+		var start := _seat_card_anchor(seat_index, card_index)
+		var proxy := _motion_card(-1, false, start, Vector2(46, 66))
+		proxies.append(proxy)
+		active_presentation_tween.tween_method(
+			_set_motion_arc.bind(proxy, start, _discard_anchor(), 26.0 + float(card_index) * 8.0),
+			0.0, 1.0, duration
+		).set_delay(float(card_index) * _animation_duration(0.035)).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+		active_presentation_tween.tween_property(proxy, "scale", Vector2(0.52, 0.52), duration)
+		active_presentation_tween.tween_property(proxy, "modulate:a", 0.0, duration * 0.35).set_delay(duration * 0.65)
+	await active_presentation_tween.finished
+	if not _presentation_alive(generation):
+		return
+	for proxy in proxies:
+		if is_instance_valid(proxy):
+			proxy.queue_free()
+
+
+func _animate_seat_pulse(generation: int, seat_index: int, color_value: Color) -> void:
+	if motion_layer == null:
+		return
+	var center_value := _pot_anchor() if seat_index < 0 else _seat_anchor(seat_index)
+	var pulse := Label.new()
+	pulse.text = "◇"
+	pulse.add_theme_font_size_override("font_size", 34)
+	pulse.add_theme_color_override("font_color", color_value)
+	pulse.size = Vector2(54, 54)
+	pulse.position = center_value - pulse.size * 0.5
+	pulse.pivot_offset = pulse.size * 0.5
+	pulse.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pulse.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	pulse.scale = Vector2(0.45, 0.45)
+	pulse.modulate.a = 0.75
+	motion_layer.add_child(pulse)
+	active_presentation_tween = create_tween().bind_node(self).set_parallel(true)
+	active_presentation_tween.tween_property(pulse, "scale", Vector2(1.30, 1.30), _animation_duration(0.20)).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	active_presentation_tween.tween_property(pulse, "modulate:a", 0.0, _animation_duration(0.20))
+	await active_presentation_tween.finished
+	if not _presentation_alive(generation):
+		return
+	if is_instance_valid(pulse):
+		pulse.queue_free()
+
+
+func _animate_settlement(generation: int) -> void:
+	await _animate_showdown(generation)
+	if not _presentation_alive(generation):
+		return
+	var settlement: Dictionary = game.poker.get("settlement", {})
+	var payouts: Array = settlement.get("payouts", [])
+	var refunds: Array = settlement.get("refunds", [])
+	for seat_index in range(6):
+		var payout := int(payouts[seat_index]) if seat_index < payouts.size() else 0
+		var refund := int(refunds[seat_index]) if seat_index < refunds.size() else 0
+		if payout + refund <= 0:
+			continue
+		await _animate_shell_transfer(generation, seat_index, payout + refund, false)
+		if not _presentation_alive(generation):
+			return
+	await get_tree().create_timer(_animation_duration(0.16)).timeout
+
+
+func _animate_showdown(generation: int) -> void:
+	var showdown: Array = game.poker.get("showdown", [])
+	if showdown.is_empty() or motion_layer == null:
+		return
+	var presentation_nodes: Array[Control] = []
+	for raw_entry in showdown:
+		if not raw_entry is Dictionary:
+			continue
+		var entry: Dictionary = raw_entry
+		var seat_index := int(entry.get("index", -1)) + 1
+		var hand: Array = entry.get("hand", [])
+		if seat_index <= 0 or hand.size() != 2:
+			continue
+		for card_index in range(2):
+			var proxy := _motion_card(int(hand[card_index]), true, _seat_card_anchor(seat_index, card_index), Vector2(46, 66))
+			proxy.scale = Vector2(0.06, 1.0)
+			proxy.modulate.a = 0.35
+			presentation_nodes.append(proxy)
+			active_presentation_tween = create_tween().bind_node(self).set_parallel(true)
+			active_presentation_tween.tween_property(proxy, "scale", Vector2.ONE, _animation_duration(0.18)).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			active_presentation_tween.tween_property(proxy, "modulate:a", 1.0, _animation_duration(0.12))
+			await active_presentation_tween.finished
+			if not _presentation_alive(generation):
+				return
+		var reading: Dictionary = entry.get("reading", {})
+		var reading_badge := _label(str(reading.get("name", "命象已定")), 13, Color("f2cf78"))
+		reading_badge.size = Vector2(116, 28)
+		reading_badge.position = _seat_anchor(seat_index) + Vector2(-58.0, 24.0)
+		reading_badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		reading_badge.modulate.a = 0.0
+		motion_layer.add_child(reading_badge)
+		presentation_nodes.append(reading_badge)
+		active_presentation_tween = create_tween().bind_node(self)
+		active_presentation_tween.tween_property(reading_badge, "modulate:a", 1.0, _animation_duration(0.14))
+		await active_presentation_tween.finished
+		if not _presentation_alive(generation):
+			return
+		await get_tree().create_timer(_animation_duration(0.08)).timeout
+	for node in presentation_nodes:
+		if is_instance_valid(node):
+			node.queue_free()
+
+
+func _motion_card(card_id: int, face_up: bool, center_value: Vector2, card_size: Vector2) -> Control:
+	var card := _card(card_id, face_up, false, true)
+	card.custom_minimum_size = card_size
+	card.size = card_size
+	card.position = center_value - card_size * 0.5
+	card.pivot_offset = card_size * 0.5
+	card.modulate.a = 0.92
+	card.z_index = 2
+	motion_layer.add_child(card)
+	return card
+
+
+func _shell_token(amount: int, index: int) -> Control:
+	var token := PanelContainer.new()
+	token.name = "ShellToken%d" % index
+	token.size = Vector2(24, 24)
+	token.custom_minimum_size = token.size
+	token.pivot_offset = token.size * 0.5
+	token.add_theme_stylebox_override("panel", _panel_style(Color("7a6230"), Color("f0d27b"), 12, 2, 1))
+	var glyph := _label("◇", 15, Color("fff0ae"))
+	glyph.tooltip_text = "%d金贝" % amount
+	glyph.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	glyph.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	token.add_child(glyph)
+	motion_layer.add_child(token)
+	return token
+
+
+func _empty_card_space(card_size: Vector2) -> Control:
+	var spacer := Control.new()
+	spacer.custom_minimum_size = card_size
+	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return spacer
+
+
+func _shell_proxy_count(amount: int) -> int:
+	if amount <= 2:
+		return 1
+	if amount <= 10:
+		return 3
+	if amount <= 50:
+		return 5
+	return 7
+
+
+func _community_count_for_stage(stage_name: String) -> int:
+	return int({"藏命": 0, "初兆": 2, "交汇": 4, "定命": 5, "解契": 5}.get(stage_name, 0))
+
+
+func _seat_anchor(seat_index: int) -> Vector2:
+	var slot := player_slot if seat_index == 0 else opponent_slots[clampi(seat_index - 1, 0, opponent_slots.size() - 1)]
+	return slot.position + slot.size * Vector2(0.5, 0.64)
+
+
+func _seat_card_anchor(seat_index: int, card_index: int) -> Vector2:
+	var slot := player_slot if seat_index == 0 else opponent_slots[clampi(seat_index - 1, 0, opponent_slots.size() - 1)]
+	var spacing := 47.0 if seat_index > 0 else 70.0
+	return slot.position + slot.size * Vector2(0.5, 0.82) + Vector2((float(card_index) - 0.5) * spacing, 0.0)
+
+
+func _board_card_anchor(card_index: int) -> Vector2:
+	var card_spacing := 66.0
+	return board_slot.position + board_slot.size * Vector2(0.5, 0.54) + Vector2((float(card_index) - 2.0) * card_spacing, 0.0)
+
+
+func _pot_anchor() -> Vector2:
+	return board_slot.position + board_slot.size * Vector2(0.5, 0.78)
+
+
+func _deck_anchor() -> Vector2:
+	return board_slot.position + board_slot.size * Vector2(0.91, 0.46)
+
+
+func _discard_anchor() -> Vector2:
+	return board_slot.position + board_slot.size * Vector2(0.08, 0.48)
+
+
+func _set_motion_arc(progress_value: float, node: Control, start: Vector2, finish: Vector2, arc_height: float) -> void:
+	if node == null or not is_instance_valid(node):
+		return
+	var t := clampf(progress_value, 0.0, 1.0)
+	var control_point := (start + finish) * 0.5 + Vector2(0.0, arc_height)
+	var center_value := start * ((1.0 - t) * (1.0 - t)) + control_point * (2.0 * (1.0 - t) * t) + finish * (t * t)
+	node.position = center_value - node.size * 0.5
+	node.rotation = deg_to_rad(lerpf(-6.0 if arc_height < 0.0 else 6.0, 0.0, t))
 
 
 func _opponent_action_order() -> Array[int]:
@@ -838,9 +1290,7 @@ func _header_leave() -> void:
 	if animation_busy:
 		return
 	if _hand_is_active():
-		var result: Dictionary = game.poker_action("fold")
-		footer_message = "" if bool(result.get("completed", false)) else str(result["text"])
-		_refresh()
+		_act("fold")
 		return
 	request_close()
 
@@ -875,10 +1325,12 @@ func _npc_think_delay(index: int, action: String) -> float:
 		delay += 0.25
 	elif action.contains("退契"):
 		delay += 0.10
-	if index == 0 or index == 4:
-		delay += 0.16
-	elif index == 2:
-		delay += 0.08
+	if game != null and index >= 0 and index < game.ORACLE_OPPONENTS.size():
+		var opponent: Dictionary = game.ORACLE_OPPONENTS[index]
+		var style_delay := float({"礁石型": 0.16, "海雾型": 0.08}.get(str(opponent.get("style", "")), 0.0))
+		delay += style_delay
+		if str(opponent.get("name", "")) == "旅人洛沙":
+			delay += 0.08
 	return delay
 
 
@@ -1032,7 +1484,9 @@ func _settlement_block(settlement: Dictionary) -> Control:
 
 
 func _signed_amount(value: int) -> String:
-	return "+%d" % value if value >= 0 else str(value)
+	if value > 0:
+		return "+%d" % value
+	return str(value)
 
 
 func _card(card_id: int, face_up: bool, emphasized: bool = false, compact: bool = false) -> Control:
@@ -1042,22 +1496,9 @@ func _card(card_id: int, face_up: bool, emphasized: bool = false, compact: bool 
 
 
 func _npc_portrait(index: int, size_value: float) -> Control:
-	if index == 0:
-		var animated_portrait = PokerNpcAvatarScript.new()
-		animated_portrait.setup(size_value)
-		return animated_portrait
-	var atlas := AtlasTexture.new()
-	atlas.atlas = NpcPortraitAtlas
-	var tile_width := float(NpcPortraitAtlas.get_width()) / 3.0
-	var tile_height := float(NpcPortraitAtlas.get_height()) / 2.0
-	atlas.region = Rect2((index % 3) * tile_width, (index / 3) * tile_height, tile_width, tile_height)
-	var portrait := TextureRect.new()
-	portrait.texture = atlas
-	portrait.custom_minimum_size = Vector2(size_value, size_value)
-	portrait.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	portrait.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
-	portrait.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	return portrait
+	var animated_portrait = PokerNpcAvatarScript.new()
+	animated_portrait.setup(size_value, index)
+	return animated_portrait
 
 
 func _animate_card_reveal(card: Control, delay: float) -> void:
@@ -1066,12 +1507,14 @@ func _animate_card_reveal(card: Control, delay: float) -> void:
 		return
 	card.pivot_offset = card.size * 0.5
 	card.scale = Vector2(0.06, 1.0)
+	card.rotation = deg_to_rad(-4.0)
 	card.modulate.a = 0.35
 	var tween := card.create_tween()
 	if delay > 0.0:
 		tween.tween_interval(delay)
 	tween.set_parallel(true)
 	tween.tween_property(card, "scale", Vector2.ONE, 0.28).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tween.tween_property(card, "rotation", 0.0, 0.24).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	tween.tween_property(card, "modulate:a", 1.0, 0.18)
 
 
@@ -1136,12 +1579,14 @@ func _action_badge(action_text: String) -> Control:
 	text_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	badge.add_child(text_label)
 	if animations_enabled and animation_busy:
-		_animate_action_badge.call_deferred(badge)
+		# Refreshes can replace a badge before the deferred callback executes.
+		# Pass the stable instance id so the message queue never retains a freed Object.
+		_animate_action_badge.call_deferred(badge.get_instance_id())
 	return badge
 
 
-func _animate_action_badge(badge: Control) -> void:
-	await get_tree().process_frame
+func _animate_action_badge(badge_instance_id: int) -> void:
+	var badge := instance_from_id(badge_instance_id) as Control
 	if not is_instance_valid(badge) or not badge.is_inside_tree():
 		return
 	badge.modulate.a = 0.25

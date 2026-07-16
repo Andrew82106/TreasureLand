@@ -7,9 +7,13 @@ extends Control
 ## hand-drawn pixel poses; this component never fakes character motion by
 ## scaling or rotating a static portrait.
 
-const TABLE_ATLAS: Texture2D = preload(
-	"res://assets/art/characters/old_qiao/oracle_table/old_qiao_table_atlas_v1.png"
-)
+const TABLE_ATLASES := [
+	preload("res://assets/art/characters/old_qiao/oracle_table/old_qiao_table_atlas_v1.png"),
+	preload("res://assets/art/characters/a_tuo/oracle_table/a_tuo_table_atlas_v1.png"),
+	preload("res://assets/art/characters/mia/oracle_table/mia_table_atlas_v1.png"),
+	preload("res://assets/art/characters/rong_granny/oracle_table/rong_granny_table_atlas_v1.png"),
+	preload("res://assets/art/characters/luosha/oracle_table/luosha_table_atlas_v1.png"),
+]
 const FRAME_SIZE := Vector2i(96, 96)
 const FRAME_COUNT := 4
 
@@ -35,10 +39,12 @@ const ANIMATION_ROWS := [
 
 var sprite: AnimatedSprite2D
 var requested_animation: StringName = TABLE_IDLE
+var opponent_index: int = 0
 
 
-func setup(size_value: float) -> void:
+func setup(size_value: float, opponent_index_value: int = 0) -> void:
 	custom_minimum_size = Vector2(size_value, size_value)
+	opponent_index = clampi(opponent_index_value, 0, TABLE_ATLASES.size() - 1)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 
@@ -84,6 +90,7 @@ func _animation_for_action(action_text: String, thinking: bool, talking: bool) -
 
 
 func _build_sprite_frames() -> SpriteFrames:
+	var table_atlas: Texture2D = TABLE_ATLASES[opponent_index]
 	var frames := SpriteFrames.new()
 	if frames.has_animation(&"default"):
 		frames.remove_animation(&"default")
@@ -94,7 +101,7 @@ func _build_sprite_frames() -> SpriteFrames:
 		frames.set_animation_loop(animation_name, bool(specification["loop"]))
 		for column in range(FRAME_COUNT):
 			var frame_texture := AtlasTexture.new()
-			frame_texture.atlas = TABLE_ATLAS
+			frame_texture.atlas = table_atlas
 			frame_texture.region = Rect2(
 				column * FRAME_SIZE.x,
 				int(specification["row"]) * FRAME_SIZE.y,

@@ -3,10 +3,14 @@ class_name GameState
 
 signal changed
 signal notice(text: String)
+signal time_boundary(kind: String, data: Dictionary)
 
 const SynthesisCatalog = preload("res://scripts/synthesis_catalog.gd")
+const FishCatalog = preload("res://scripts/fish_catalog.gd")
 const ITEMS := SynthesisCatalog.ITEMS
 const RECIPES := SynthesisCatalog.RECIPES
+const FISH_SPECIES := FishCatalog.SPECIES
+const DIVE_AREAS := FishCatalog.AREAS
 
 const INITIAL_DISCOVERIES := ["water", "fire", "earth"]
 const MAX_SYNTHESIS_TIER := 4
@@ -47,6 +51,14 @@ const RACE_TOP3_PROBABILITIES := {
 const RACE_TARGET_RETURN := 0.88
 
 const DAILY_FISHING_LIMIT := 3
+const TIME_SPEED_SECONDS := {"紧凑": 90.0, "标准": 120.0, "悠闲": 150.0}
+const TIME_STATE_WORLD := "world_active"
+const TIME_STATE_UI := "ui_paused"
+const TIME_STATE_ACTIVITY := "activity_snapshot"
+const TIME_STATE_FAST_FORWARD := "fast_forward"
+const TIME_STATE_DAY_END := "day_end_hold"
+const SAVE_VERSION := 1
+const MANUAL_SAVE_PATH := "user://saves/manual_save.json"
 const POKER_TIERS := [
 	{"name": "潮边小桌", "buy_in": 80, "wealth_required": 0, "small_blind": 1, "big_blind": 2, "description": "认识规则与人物，输赢幅度较小"},
 	{"name": "椰影常桌", "buy_in": 200, "wealth_required": 500, "small_blind": 2, "big_blind": 4, "description": "学徒开放，开始形成可感知的财富波动"},
@@ -80,7 +92,16 @@ var cash: int = 120
 var locked_principal: int = 0
 var day: int = 1
 var tide: int = 1
+var tide_progress: float = 0.0
+var time_speed_mode: String = "标准"
+var time_state: String = TIME_STATE_WORLD
+var time_pause_reasons := {}
+var day_end_pending: bool = false
 var weather: String = "晴"
+var wind_direction: String = "侧风"
+var daily_seed: int = 20260713
+var daily_schedule := {}
+var time_event_log: Array = []
 var discovered := {
 	"water": true, "fire": true, "earth": true
 }
@@ -93,6 +114,28 @@ var relationships := {"granny": 10, "old_joe": 0, "aqiu": 0, "mia": 0, "milo": 0
 var memories := {}
 var free_race_ticket: int = 1
 var fishing_attempts_today: int = 0
+var dive_windows_remaining: int = DAILY_FISHING_LIMIT
+var dive_scene_seed: int = 0
+var dive_active: bool = false
+var dive_state := {}
+var dive_sequence: int = 0
+var fish_catch_sequence: int = 0
+var fish_catch_inventory: Array = []
+var marine_discoveries := {}
+var marine_size_records := {}
+var fish_market_quotes := {}
+var fish_market_stock := {}
+var fish_market_demand := {}
+var fish_market_reasons := {}
+var fish_market_orders: Array = []
+var fish_market_history: Array = []
+var fish_market_transactions: Array = []
+var fish_market_refresh_index: int = 0
+var fish_sale_sequence: int = 0
+var pending_fish_sales := {}
+var processed_fish_sales := {}
+var dive_equipment := {"oxygen": 50.0, "basket": 4, "swim_speed": 1.0, "preservation_days": 0}
+var last_dive_result := {}
 var poker_completed: bool = false
 var aqiu_request_active: bool = false
 var aqiu_request_done: bool = false
@@ -124,8 +167,244 @@ var rng := RandomNumberGenerator.new()
 
 func _init() -> void:
 	rng.seed = 20260713
+	_generate_daily_schedule()
+	_initialize_fish_market()
 	_load_recent_oracle_records()
 	_record_wealth("来到万物之岛", true)
+
+
+func can_save_game() -> bool:
+	return not poker_session_active and not dive_active and locked_principal == 0
+
+
+func build_save_data(world_state: Dictionary = {}) -> Dictionary:
+	return {
+		"version": SAVE_VERSION,
+		"saved_at_unix": int(Time.get_unix_time_from_system()),
+		"state": {
+			"cash": cash,
+			"locked_principal": locked_principal,
+			"day": day,
+			"tide": tide,
+			"tide_progress": tide_progress,
+			"time_speed_mode": time_speed_mode,
+			"time_state": time_state,
+			"time_pause_reasons": time_pause_reasons.duplicate(true),
+			"day_end_pending": day_end_pending,
+			"weather": weather,
+			"wind_direction": wind_direction,
+			"daily_seed": daily_seed,
+			"daily_schedule": daily_schedule.duplicate(true),
+			"time_event_log": time_event_log.duplicate(true),
+			"rng_seed": str(rng.seed),
+			"rng_state": str(rng.state),
+			"discovered": discovered.duplicate(true),
+			"attempted_pairs": attempted_pairs.duplicate(true),
+			"recent_synthesis_pairs": recent_synthesis_pairs.duplicate(),
+			"synthesis_discount_uses": synthesis_discount_uses,
+			"last_shop_hint": last_shop_hint,
+			"last_shop_hint_key": last_shop_hint_key,
+			"relationships": relationships.duplicate(true),
+			"memories": memories.duplicate(true),
+			"free_race_ticket": free_race_ticket,
+			"fishing_attempts_today": fishing_attempts_today,
+			"dive_windows_remaining": dive_windows_remaining,
+			"dive_scene_seed": str(dive_scene_seed),
+			"dive_active": dive_active,
+			"dive_state": dive_state.duplicate(true),
+			"dive_sequence": dive_sequence,
+			"fish_catch_sequence": fish_catch_sequence,
+			"fish_catch_inventory": fish_catch_inventory.duplicate(true),
+			"marine_discoveries": marine_discoveries.duplicate(true),
+			"marine_size_records": marine_size_records.duplicate(true),
+			"fish_market_quotes": fish_market_quotes.duplicate(true),
+			"fish_market_stock": fish_market_stock.duplicate(true),
+			"fish_market_demand": fish_market_demand.duplicate(true),
+			"fish_market_reasons": fish_market_reasons.duplicate(true),
+			"fish_market_orders": fish_market_orders.duplicate(true),
+			"fish_market_history": fish_market_history.duplicate(true),
+			"fish_market_transactions": fish_market_transactions.duplicate(true),
+			"fish_market_refresh_index": fish_market_refresh_index,
+			"fish_sale_sequence": fish_sale_sequence,
+			"processed_fish_sales": processed_fish_sales.duplicate(true),
+			"dive_equipment": dive_equipment.duplicate(true),
+			"last_dive_result": last_dive_result.duplicate(true),
+			"poker_completed": poker_completed,
+			"aqiu_request_active": aqiu_request_active,
+			"aqiu_request_done": aqiu_request_done,
+			"ultimate_created": ultimate_created,
+			"poker_dealer_seat": poker_dealer_seat,
+			"poker_npc_wallets": poker_npc_wallets.duplicate(true),
+			"poker_npc_brought": poker_npc_brought.duplicate(true),
+			"poker_npc_present": poker_npc_present.duplicate(true),
+			"wealth_history": wealth_history.duplicate(true)
+		},
+		"world": world_state.duplicate(true)
+	}
+
+
+func save_game(path: String = MANUAL_SAVE_PATH, world_state: Dictionary = {}, allow_activity_snapshot: bool = false) -> Dictionary:
+	if not allow_activity_snapshot and not can_save_game():
+		return {"ok": false, "text": "当前活动仍有金贝或牌局状态未结算，暂时不能存档。"}
+	var absolute_directory := ProjectSettings.globalize_path(path.get_base_dir())
+	var directory_error := DirAccess.make_dir_recursive_absolute(absolute_directory)
+	if directory_error != OK:
+		return {"ok": false, "text": "无法创建存档目录。", "error": directory_error}
+	var temporary_path := path + ".tmp"
+	var backup_path := path + ".bak"
+	var file := FileAccess.open(temporary_path, FileAccess.WRITE)
+	if file == null:
+		return {"ok": false, "text": "无法写入存档。", "error": FileAccess.get_open_error()}
+	file.store_string(JSON.stringify(build_save_data(world_state), "\t"))
+	file.close()
+	var absolute_path := ProjectSettings.globalize_path(path)
+	var absolute_temporary := ProjectSettings.globalize_path(temporary_path)
+	var absolute_backup := ProjectSettings.globalize_path(backup_path)
+	if FileAccess.file_exists(backup_path):
+		DirAccess.remove_absolute(absolute_backup)
+	if FileAccess.file_exists(path):
+		var backup_error := DirAccess.rename_absolute(absolute_path, absolute_backup)
+		if backup_error != OK:
+			DirAccess.remove_absolute(absolute_temporary)
+			return {"ok": false, "text": "无法轮换旧存档，原存档未被修改。", "error": backup_error}
+	var install_error := DirAccess.rename_absolute(absolute_temporary, absolute_path)
+	if install_error != OK:
+		if FileAccess.file_exists(backup_path):
+			DirAccess.rename_absolute(absolute_backup, absolute_path)
+		return {"ok": false, "text": "无法完成存档写入，已尝试恢复旧存档。", "error": install_error}
+	return {"ok": true, "path": path, "text": "进度已保存。"}
+
+
+func save_auto_game(world_state: Dictionary = {}) -> Dictionary:
+	var path := "user://saves/autosave_day_%03d.json" % day
+	var result := save_game(path, world_state)
+	if bool(result.get("ok", false)):
+		var expired_path := "user://saves/autosave_day_%03d.json" % (day - 7)
+		if day > 7 and FileAccess.file_exists(expired_path):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(expired_path))
+	return result
+
+
+func load_game(path: String = MANUAL_SAVE_PATH) -> Dictionary:
+	if not FileAccess.file_exists(path):
+		return {"ok": false, "text": "还没有可读取的存档。"}
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return {"ok": false, "text": "无法读取存档。", "error": FileAccess.get_open_error()}
+	var parsed = JSON.parse_string(file.get_as_text())
+	file.close()
+	if not parsed is Dictionary:
+		return {"ok": false, "text": "存档内容损坏，未修改当前进度。"}
+	var restored := restore_save_data(parsed)
+	if not bool(restored.get("ok", false)):
+		return restored
+	restored["path"] = path
+	restored["world"] = parsed.get("world", {}).duplicate(true)
+	return restored
+
+
+func restore_save_data(data: Dictionary) -> Dictionary:
+	var validation := _validate_save_data(data)
+	if not bool(validation.get("ok", false)):
+		return validation
+	var version := int(data.get("version", 0))
+	var saved: Dictionary = data["state"]
+	var saved_speed := str(saved.get("time_speed_mode", "标准"))
+	if not TIME_SPEED_SECONDS.has(saved_speed):
+		saved_speed = "标准"
+	cash = maxi(0, int(saved.get("cash", 120)))
+	locked_principal = 0
+	day = maxi(1, int(saved.get("day", 1)))
+	tide = clampi(int(saved.get("tide", 1)), 1, 16)
+	tide_progress = clampf(float(saved.get("tide_progress", 0.0)), 0.0, 0.999999)
+	time_speed_mode = saved_speed
+	day_end_pending = bool(saved.get("day_end_pending", false))
+	weather = str(saved.get("weather", "晴"))
+	wind_direction = str(saved.get("wind_direction", "侧风"))
+	daily_seed = int(saved.get("daily_seed", 20260713))
+	daily_schedule = saved.get("daily_schedule", {}).duplicate(true)
+	time_event_log = saved.get("time_event_log", []).duplicate(true)
+	rng.seed = int(str(saved.get("rng_seed", "20260713")))
+	rng.state = int(str(saved.get("rng_state", str(rng.state))))
+	discovered = saved.get("discovered", {}).duplicate(true)
+	for root_id in INITIAL_DISCOVERIES:
+		discovered[root_id] = true
+	attempted_pairs = saved.get("attempted_pairs", {}).duplicate(true)
+	recent_synthesis_pairs.clear()
+	for raw_key in saved.get("recent_synthesis_pairs", []):
+		var pair_key := str(raw_key)
+		if not recent_synthesis_pairs.has(pair_key):
+			recent_synthesis_pairs.append(pair_key)
+	while recent_synthesis_pairs.size() > 8:
+		recent_synthesis_pairs.pop_back()
+	synthesis_discount_uses = clampi(int(saved.get("synthesis_discount_uses", 0)), 0, 6)
+	last_shop_hint = str(saved.get("last_shop_hint", ""))
+	last_shop_hint_key = str(saved.get("last_shop_hint_key", ""))
+	relationships = saved.get("relationships", {}).duplicate(true)
+	memories = saved.get("memories", {}).duplicate(true)
+	free_race_ticket = maxi(0, int(saved.get("free_race_ticket", 0)))
+	fishing_attempts_today = clampi(int(saved.get("fishing_attempts_today", 0)), 0, DAILY_FISHING_LIMIT)
+	dive_windows_remaining = clampi(int(saved.get("dive_windows_remaining", DAILY_FISHING_LIMIT - fishing_attempts_today)), 0, DAILY_FISHING_LIMIT)
+	fishing_attempts_today = DAILY_FISHING_LIMIT - dive_windows_remaining
+	dive_scene_seed = int(str(saved.get("dive_scene_seed", "0")))
+	dive_active = bool(saved.get("dive_active", false))
+	dive_state = saved.get("dive_state", {}).duplicate(true)
+	dive_sequence = maxi(0, int(saved.get("dive_sequence", 0)))
+	fish_catch_sequence = maxi(0, int(saved.get("fish_catch_sequence", 0)))
+	fish_catch_inventory = saved.get("fish_catch_inventory", []).duplicate(true)
+	marine_discoveries = saved.get("marine_discoveries", {}).duplicate(true)
+	marine_size_records = saved.get("marine_size_records", {}).duplicate(true)
+	fish_market_quotes = saved.get("fish_market_quotes", {}).duplicate(true)
+	fish_market_stock = saved.get("fish_market_stock", {}).duplicate(true)
+	fish_market_demand = saved.get("fish_market_demand", {}).duplicate(true)
+	fish_market_reasons = saved.get("fish_market_reasons", {}).duplicate(true)
+	fish_market_orders = saved.get("fish_market_orders", []).duplicate(true)
+	fish_market_history = saved.get("fish_market_history", []).duplicate(true)
+	fish_market_transactions = saved.get("fish_market_transactions", []).duplicate(true)
+	fish_market_refresh_index = maxi(0, int(saved.get("fish_market_refresh_index", 0)))
+	fish_sale_sequence = maxi(0, int(saved.get("fish_sale_sequence", 0)))
+	processed_fish_sales = saved.get("processed_fish_sales", {}).duplicate(true)
+	pending_fish_sales.clear()
+	dive_equipment = saved.get("dive_equipment", {"oxygen": 50.0, "basket": 4, "swim_speed": 1.0, "preservation_days": 0}).duplicate(true)
+	last_dive_result = saved.get("last_dive_result", {}).duplicate(true)
+	poker_completed = bool(saved.get("poker_completed", false))
+	aqiu_request_active = bool(saved.get("aqiu_request_active", false))
+	aqiu_request_done = bool(saved.get("aqiu_request_done", false))
+	ultimate_created = bool(saved.get("ultimate_created", false))
+	poker_dealer_seat = int(saved.get("poker_dealer_seat", -1))
+	poker_npc_wallets = saved.get("poker_npc_wallets", []).duplicate(true)
+	poker_npc_brought = saved.get("poker_npc_brought", []).duplicate(true)
+	poker_npc_present = saved.get("poker_npc_present", []).duplicate(true)
+	wealth_history = saved.get("wealth_history", []).duplicate(true)
+	if wealth_history.is_empty():
+		_record_wealth("读取旧存档", true)
+	poker.clear()
+	poker_session_active = false
+	poker_session_time_charged = false
+	time_pause_reasons.clear()
+	if daily_schedule.is_empty():
+		_generate_daily_schedule()
+	if fish_market_quotes.is_empty():
+		_initialize_fish_market()
+	time_state = TIME_STATE_DAY_END if day_end_pending else TIME_STATE_WORLD
+	changed.emit()
+	return {"ok": true, "text": "存档已读取。", "version": version}
+
+
+func _validate_save_data(data: Dictionary) -> Dictionary:
+	var version := int(data.get("version", 0))
+	if version <= 0 or version > SAVE_VERSION:
+		return {"ok": false, "text": "存档版本不受支持，未修改当前进度。"}
+	if not data.get("state", {}) is Dictionary or not data.get("world", {}) is Dictionary:
+		return {"ok": false, "text": "存档结构损坏，未修改当前进度。"}
+	var saved: Dictionary = data["state"]
+	for key in ["daily_schedule", "discovered", "attempted_pairs", "relationships", "memories", "dive_state", "marine_discoveries", "marine_size_records", "fish_market_quotes", "fish_market_stock", "fish_market_demand", "fish_market_reasons", "processed_fish_sales", "dive_equipment", "last_dive_result"]:
+		if saved.has(key) and not saved[key] is Dictionary:
+			return {"ok": false, "text": "存档字段%s损坏，未修改当前进度。" % key}
+	for key in ["time_event_log", "recent_synthesis_pairs", "wealth_history", "poker_npc_wallets", "poker_npc_brought", "poker_npc_present", "fish_catch_inventory", "fish_market_orders", "fish_market_history", "fish_market_transactions"]:
+		if saved.has(key) and not saved[key] is Array:
+			return {"ok": false, "text": "存档字段%s损坏，未修改当前进度。" % key}
+	return {"ok": true}
 
 
 func item_name(item_id: String) -> String:
@@ -139,11 +418,11 @@ func account_wealth() -> int:
 
 
 func asset_liquidation_value() -> int:
-	return 0
+	return fish_inventory_value()
 
 
 func net_worth() -> int:
-	return account_wealth()
+	return account_wealth() + asset_liquidation_value()
 
 
 func wealth_history_for_chart() -> Array:
@@ -238,7 +517,7 @@ func suggested_reserve() -> int:
 
 
 func fishing_remaining_today() -> int:
-	return maxi(0, DAILY_FISHING_LIMIT - fishing_attempts_today)
+	return clampi(dive_windows_remaining, 0, DAILY_FISHING_LIMIT)
 
 
 func poker_tiers() -> Array:
@@ -272,18 +551,131 @@ func phase_name() -> String:
 	return "夜晚"
 
 
-func advance_time(amount: int) -> void:
-	tide += amount
-	while tide > 16:
-		tide -= 16
-		day += 1
-		refresh_day()
+func seconds_per_tide() -> float:
+	return float(TIME_SPEED_SECONDS.get(time_speed_mode, 120.0))
+
+
+func set_time_speed_mode(mode: String) -> bool:
+	if not TIME_SPEED_SECONDS.has(mode):
+		return false
+	if time_speed_mode == mode:
+		return true
+	time_speed_mode = mode
 	changed.emit()
+	return true
+
+
+func set_time_pause(reason: String, active: bool, requested_state: String = TIME_STATE_UI) -> void:
+	if active:
+		time_pause_reasons[reason] = requested_state
+	else:
+		time_pause_reasons.erase(reason)
+	_recompute_time_state()
+
+
+func _recompute_time_state() -> void:
+	var next_state := TIME_STATE_WORLD
+	if day_end_pending:
+		next_state = TIME_STATE_DAY_END
+	elif time_pause_reasons.values().has(TIME_STATE_ACTIVITY):
+		next_state = TIME_STATE_ACTIVITY
+	elif time_pause_reasons.values().has(TIME_STATE_FAST_FORWARD):
+		next_state = TIME_STATE_FAST_FORWARD
+	elif not time_pause_reasons.is_empty():
+		next_state = TIME_STATE_UI
+	if next_state == time_state:
+		return
+	time_state = next_state
+	changed.emit()
+
+
+func world_clock_running() -> bool:
+	return time_state == TIME_STATE_WORLD and not day_end_pending
+
+
+func time_state_label() -> String:
+	return {
+		TIME_STATE_WORLD: "世界流动",
+		TIME_STATE_UI: "界面停表",
+		TIME_STATE_ACTIVITY: "活动快照",
+		TIME_STATE_FAST_FORWARD: "等待推进",
+		TIME_STATE_DAY_END: "日终停驻"
+	}.get(time_state, "世界流动")
+
+
+func advance_world_delta(delta_seconds: float) -> bool:
+	if delta_seconds <= 0.0 or not world_clock_running():
+		return false
+	return advance_time_fraction(delta_seconds / seconds_per_tide(), "自然流逝")
+
+
+func advance_time(amount: int) -> void:
+	advance_time_fraction(float(amount), "固定活动")
+
+
+func fast_forward_time(amount: float, source: String = "主动等待") -> bool:
+	if amount <= 0.0 or day_end_pending:
+		return false
+	set_time_pause("fast_forward", true, TIME_STATE_FAST_FORWARD)
+	var advanced := advance_time_fraction(amount, source)
+	set_time_pause("fast_forward", false)
+	return advanced
+
+
+func advance_time_fraction(amount: float, source: String = "固定活动") -> bool:
+	if amount <= 0.0 or day_end_pending:
+		return false
+	var remaining := amount
+	var advanced := false
+	var crossed_boundary := false
+	while remaining > 0.000001 and not day_end_pending:
+		var available := 1.0 - tide_progress
+		var step := minf(remaining, available)
+		tide_progress += step
+		remaining -= step
+		advanced = advanced or step > 0.0
+		if tide_progress >= 0.999999:
+			tide_progress = 0.0
+			crossed_boundary = true
+			if tide >= 16:
+				day_end_pending = true
+				time_state = TIME_STATE_DAY_END
+				_record_time_event("day_end", source)
+				time_boundary.emit("day_end", {"day": day, "tide": tide, "source": source})
+				break
+			var old_phase := phase_name()
+			tide += 1
+			_record_time_event("tide", source)
+			time_boundary.emit("tide", {"day": day, "tide": tide, "source": source})
+			if phase_name() != old_phase:
+				_record_time_event("phase", source)
+				_refresh_fish_market("时段边界")
+				time_boundary.emit("phase", {"day": day, "tide": tide, "phase": phase_name(), "source": source})
+	if crossed_boundary:
+		changed.emit()
+	return advanced
+
+
+func _record_time_event(kind: String, source: String) -> void:
+	time_event_log.append({
+		"kind": kind,
+		"day": day,
+		"tide": tide,
+		"progress": tide_progress,
+		"phase": phase_name(),
+		"source": source
+	})
+	while time_event_log.size() > 64:
+		time_event_log.pop_front()
 
 
 func sleep_to_next_day() -> void:
 	day += 1
 	tide = 1
+	tide_progress = 0.0
+	day_end_pending = false
+	time_pause_reasons.clear()
+	time_state = TIME_STATE_WORLD
 	refresh_day()
 	_record_wealth("第%d天开始" % day, true)
 	changed.emit()
@@ -292,9 +684,44 @@ func sleep_to_next_day() -> void:
 
 func refresh_day() -> void:
 	fishing_attempts_today = 0
+	dive_windows_remaining = DAILY_FISHING_LIMIT
+	dive_active = false
+	dive_state.clear()
+	dive_scene_seed = 0
+	daily_seed = int(rng.randi())
+	var day_rng := RandomNumberGenerator.new()
+	day_rng.seed = daily_seed
 	var weathers := ["晴", "阵雨", "强风"]
-	weather = weathers[rng.randi_range(0, weathers.size() - 1)]
+	var winds := ["顺风", "侧风", "逆风"]
+	weather = weathers[day_rng.randi_range(0, weathers.size() - 1)]
+	wind_direction = winds[day_rng.randi_range(0, winds.size() - 1)]
+	_generate_daily_schedule()
+	_initialize_fish_market()
 	changed.emit()
+
+
+func _generate_daily_schedule() -> void:
+	daily_schedule = {
+		"day": day,
+		"seed": daily_seed,
+		"weather": weather,
+		"wind": wind_direction,
+		"npc_locations": {
+			"granny": {"清晨": "漂流湾造化盆", "白天": "椰影茶摊", "傍晚": "椰影茶摊", "夜晚": "椰影茶摊"},
+			"old_joe": {"清晨": "椰影茶摊", "白天": "椰影街", "傍晚": "椰影茶摊", "夜晚": "椰影茶摊牌局"},
+			"aqiu": {"清晨": "逐风海岸马厩", "白天": "逐风海岸赛场", "傍晚": "逐风海岸看台", "夜晚": "逐风海岸休息区"},
+			"mia": {"清晨": "椰影街报亭", "白天": "逐风海岸采访区", "傍晚": "椰影街报亭", "夜晚": "椰影茶摊"},
+			"milo": {"清晨": "未出现", "白天": "未出现", "傍晚": "特殊事件", "夜晚": "椰影茶摊"},
+			"shopkeeper": {"清晨": "椰影杂货铺", "白天": "椰影杂货铺", "傍晚": "椰影杂货铺", "夜晚": "代班服务"}
+		},
+		"regular_race_tides": [3, 7, 11, 15],
+		"fish_market_refresh_tides": [1, 5, 9, 13]
+	}
+
+
+func npc_location(npc_id: String) -> String:
+	var locations: Dictionary = daily_schedule.get("npc_locations", {}).get(npc_id, {})
+	return str(locations.get(phase_name(), "未知区域"))
 
 
 func is_discovered(item_id: String) -> bool:
@@ -481,9 +908,11 @@ func synthesize_pair(left_id: String, right_id: String) -> Dictionary:
 	while recent_synthesis_pairs.size() > 8:
 		recent_synthesis_pairs.pop_back()
 	_record_wealth("万物实验 · %s + %s" % [item_name(left_id), item_name(right_id)])
+	advance_time_fraction(0.25, "万物实验")
 	changed.emit()
 	var result := record.duplicate(true)
 	result["ok"] = true
+	result["time_cost"] = 0.25
 	if bool(record["success"]):
 		result["text"] = "发现%s。万物永久保留，本次支付%d金贝。" % [item_name(str(record["output"])), cost]
 	else:
@@ -650,27 +1079,536 @@ func _next_synthesis_hint_record() -> Dictionary:
 	return {}
 
 
-func fish_once() -> Dictionary:
-	if fishing_attempts_today >= DAILY_FISHING_LIMIT:
-		return {
-			"ok": false,
-			"remaining": 0,
-			"text": "今天这片浅滩已经被翻找干净。潮水明早会带来新的鱼获与漂流物。"
-		}
-	fishing_attempts_today += 1
-	var coins := rng.randi_range(40, 80)
-	var observations := ["银鳞鱼群", "潮池贝影", "漂木纹路", "盐沫结晶", "海草流向"]
-	var observation := str(observations[rng.randi_range(0, observations.size() - 1)])
-	cash += coins
-	advance_time(1)
-	_record_wealth("浅滩采集")
+func dive_area_unlocked(area_id: String) -> bool:
+	if area_id == "sand_shallows":
+		return true
+	if area_id == "coral_shelf":
+		return dive_sequence > 0 or not marine_discoveries.is_empty()
+	if area_id == "wreck_edge":
+		return marine_discoveries.size() >= 5 or is_discovered("water_jar")
+	return false
+
+
+func dive_area_status(area_id: String) -> Dictionary:
+	if not DIVE_AREAS.has(area_id):
+		return {"ok": false, "text": "未知潜捕区域。"}
+	var area: Dictionary = DIVE_AREAS[area_id]
+	var visibility := float(area["visibility"])
+	if weather == "阵雨":
+		visibility *= 0.82
+	elif weather == "强风":
+		visibility *= 0.68
 	return {
 		"ok": true,
-		"observation": observation,
-		"coins": coins,
-		"remaining": fishing_remaining_today(),
-		"text": "你记录了%s，并把可用鱼获换成%d金贝。今日浅滩还可采集%d次。" % [observation, coins, fishing_remaining_today()]
+		"id": area_id,
+		"name": str(area["name"]),
+		"description": str(area["description"]),
+		"current": str(area["current"]),
+		"visibility": clampf(visibility, 0.25, 1.0),
+		"unlocked": dive_area_unlocked(area_id),
+		"unlock": str(area["unlock"])
 	}
+
+
+func begin_dive(area_id: String) -> Dictionary:
+	if dive_active:
+		return {"ok": true, "resumed": true, "state": dive_state.duplicate(true)}
+	if fishing_remaining_today() <= 0:
+		return {"ok": false, "text": "今天的三个有效鱼群窗口已经用尽，明天清晨会随海况刷新。"}
+	if not DIVE_AREAS.has(area_id) or not dive_area_unlocked(area_id):
+		return {"ok": false, "text": "这个区域目前还不能安全进入。"}
+	var area_index := DIVE_AREAS.keys().find(area_id)
+	var used_window := DAILY_FISHING_LIMIT - dive_windows_remaining
+	dive_scene_seed = posmod(daily_seed, 2147483647) ^ ((day + 31) * 7919) ^ ((used_window + 7) * 104729) ^ ((area_index + 3) * 15485863)
+	var local_rng := RandomNumberGenerator.new()
+	local_rng.seed = dive_scene_seed
+	var candidate_count := 10 if area_id == "sand_shallows" else (9 if area_id == "coral_shelf" else 8)
+	var candidates: Array = []
+	for index in range(candidate_count):
+		var species_id := _roll_dive_species(local_rng, area_id)
+		var size_roll := clampf(local_rng.randf() + (0.04 if area_id == "wreck_edge" else 0.0), 0.0, 1.0)
+		var behavior := str(FISH_SPECIES[species_id]["behavior"])
+		var base_speed: float = float({"群游": 58.0, "藏礁": 43.0, "疾游": 78.0}.get(behavior, 55.0))
+		candidates.append({
+			"index": index,
+			"species_id": species_id,
+			"size": FishCatalog.size_from_roll(size_roll),
+			"size_score": snappedf(size_roll, 0.0001),
+			"behavior": behavior,
+			"position": {"x": local_rng.randf_range(0.18, 0.91), "y": local_rng.randf_range(0.16, 0.84)},
+			"route_angle": local_rng.randf_range(-PI, PI),
+			"speed": base_speed * local_rng.randf_range(0.86, 1.14),
+			"captured": false
+		})
+	dive_active = true
+	dive_state = {
+		"area_id": area_id,
+		"seed": str(dive_scene_seed),
+		"day": day,
+		"tide": tide,
+		"weather": weather,
+		"phase": phase_name(),
+		"oxygen_max": float(dive_equipment.get("oxygen", 50.0)),
+		"oxygen": float(dive_equipment.get("oxygen", 50.0)),
+		"basket_capacity": int(dive_equipment.get("basket", 4)),
+		"captured_indices": [],
+		"candidates": candidates,
+		"elapsed": 0.0
+	}
+	changed.emit()
+	return {"ok": true, "resumed": false, "state": dive_state.duplicate(true)}
+
+
+func _roll_dive_species(local_rng: RandomNumberGenerator, area_id: String) -> String:
+	var weighted: Array = []
+	var total := 0.0
+	for raw_id in FISH_SPECIES.keys():
+		var species_id := str(raw_id)
+		var weight := FishCatalog.candidate_weight(species_id, area_id, phase_name(), weather)
+		if weight <= 0.0:
+			continue
+		total += weight
+		weighted.append({"id": species_id, "ceiling": total})
+	if weighted.is_empty():
+		return "bubble_sardine"
+	var roll := local_rng.randf() * total
+	for entry in weighted:
+		if roll <= float(entry["ceiling"]):
+			return str(entry["id"])
+	return str(weighted[-1]["id"])
+
+
+func update_dive_oxygen(delta_seconds: float, fast_swimming: bool = false) -> float:
+	if not dive_active or delta_seconds <= 0.0:
+		return float(dive_state.get("oxygen", 0.0))
+	var rate := 1.35 if fast_swimming else 1.0
+	dive_state["elapsed"] = float(dive_state.get("elapsed", 0.0)) + delta_seconds
+	dive_state["oxygen"] = maxf(0.0, float(dive_state.get("oxygen", 0.0)) - delta_seconds * rate)
+	return float(dive_state["oxygen"])
+
+
+func dive_capture(candidate_index: int) -> Dictionary:
+	if not dive_active:
+		return {"ok": false, "text": "当前没有进行中的潜捕。"}
+	if float(dive_state.get("oxygen", 0.0)) <= 0.0:
+		return {"ok": false, "forced_surface": true, "text": "氧气已经耗尽，必须立即上浮。"}
+	var captured: Array = dive_state.get("captured_indices", [])
+	if captured.size() >= int(dive_state.get("basket_capacity", 4)):
+		return {"ok": false, "basket_full": true, "text": "鱼篓已经装满。可以放走一条鱼，或带着现有鱼获上浮。"}
+	var candidates: Array = dive_state.get("candidates", [])
+	if candidate_index < 0 or candidate_index >= candidates.size() or captured.has(candidate_index):
+		return {"ok": false, "text": "这条鱼已经离开抓取范围。"}
+	captured.append(candidate_index)
+	dive_state["captured_indices"] = captured
+	dive_state["oxygen"] = maxf(0.0, float(dive_state.get("oxygen", 0.0)) - 1.25)
+	var candidate: Dictionary = candidates[candidate_index]
+	return {
+		"ok": true,
+		"candidate": candidate.duplicate(true),
+		"basket_count": captured.size(),
+		"basket_capacity": int(dive_state.get("basket_capacity", 4)),
+		"text": "抓到%s · %s。" % [FishCatalog.species_name(str(candidate["species_id"])), str(candidate["size"])]
+	}
+
+
+func release_dive_catch(candidate_index: int) -> bool:
+	if not dive_active:
+		return false
+	var captured: Array = dive_state.get("captured_indices", [])
+	if not captured.has(candidate_index):
+		return false
+	captured.erase(candidate_index)
+	dive_state["captured_indices"] = captured
+	return true
+
+
+func finish_dive(forced_surface: bool = false) -> Dictionary:
+	if not dive_active:
+		return {"ok": false, "text": "当前没有需要结算的潜捕。"}
+	var area_id := str(dive_state.get("area_id", "sand_shallows"))
+	var candidates: Array = dive_state.get("candidates", [])
+	var caught_now: Array = []
+	var first_discoveries: Array[String] = []
+	var new_records: Array[String] = []
+	for raw_index in dive_state.get("captured_indices", []):
+		var candidate_index := int(raw_index)
+		if candidate_index < 0 or candidate_index >= candidates.size():
+			continue
+		var candidate: Dictionary = candidates[candidate_index]
+		fish_catch_sequence += 1
+		var species_id := str(candidate["species_id"])
+		var catch_record := {
+			"catch_id": "catch_d%03d_%05d" % [day, fish_catch_sequence],
+			"species_id": species_id,
+			"size": str(candidate["size"]),
+			"size_score": float(candidate["size_score"]),
+			"caught_day": day,
+			"caught_tide": tide,
+			"source_area": area_id,
+			"scene_seed": str(dive_scene_seed)
+		}
+		fish_catch_inventory.append(catch_record)
+		caught_now.append(catch_record.duplicate(true))
+		if not marine_discoveries.has(species_id):
+			first_discoveries.append(FishCatalog.species_name(species_id))
+			marine_discoveries[species_id] = {
+				"seen": true, "caught": true, "first_day": day, "first_tide": tide,
+				"first_area": area_id, "known_tags": FISH_SPECIES[species_id]["tags"].duplicate()
+			}
+		var prior_score := float(marine_size_records.get(species_id, {}).get("size_score", -1.0))
+		if float(candidate["size_score"]) > prior_score:
+			marine_size_records[species_id] = {
+				"size_score": float(candidate["size_score"]), "size": str(candidate["size"]),
+				"catch_id": str(catch_record["catch_id"]), "day": day
+			}
+			if str(candidate["size"]) == "纪录级":
+				new_records.append(FishCatalog.species_name(species_id))
+	dive_windows_remaining = maxi(0, dive_windows_remaining - 1)
+	fishing_attempts_today = DAILY_FISHING_LIMIT - dive_windows_remaining
+	dive_sequence += 1
+	dive_active = false
+	dive_state.clear()
+	advance_time_fraction(1.0, "海岸潜捕")
+	var estimated_total := 0
+	for catch_record in caught_now:
+		estimated_total += fish_catch_value(catch_record)
+	last_dive_result = {
+		"ok": true,
+		"forced_surface": forced_surface,
+		"area_id": area_id,
+		"catches": caught_now,
+		"first_discoveries": first_discoveries,
+		"new_records": new_records,
+		"estimated_total": estimated_total,
+		"remaining": dive_windows_remaining,
+		"text": "%s，共带回%d条鱼获；当前鱼铺估值约%d金贝。今日还剩%d个有效鱼群窗口。" % [
+			"氧气耗尽后自动上浮" if forced_surface else "你主动返回岸边",
+			caught_now.size(), estimated_total, dive_windows_remaining
+		]
+	}
+	_record_wealth("海岸潜捕 · 上岸")
+	changed.emit()
+	return last_dive_result.duplicate(true)
+
+
+func fish_once() -> Dictionary:
+	# 兼容自动测试和无障碍快速潜捕：只生成并保存鱼获，不再直接发放金贝。
+	var started := begin_dive("sand_shallows")
+	if not bool(started.get("ok", false)):
+		return started
+	var candidates: Array = dive_state.get("candidates", [])
+	var capacity := int(dive_state.get("basket_capacity", 4))
+	for index in range(mini(capacity, candidates.size())):
+		dive_capture(index)
+	return finish_dive(false)
+
+
+func fish_freshness_state(catch_record: Dictionary) -> String:
+	var preservation := clampi(int(dive_equipment.get("preservation_days", 0)), 0, 1)
+	var age := maxi(0, day - int(catch_record.get("caught_day", day)) - preservation)
+	if age <= 0:
+		return "鲜活"
+	if age == 1:
+		return "尚鲜"
+	return "加工级"
+
+
+func fish_catch_value(catch_record: Dictionary) -> int:
+	var species_id := str(catch_record.get("species_id", ""))
+	if not FISH_SPECIES.has(species_id):
+		return 1
+	var quote := float(fish_market_quotes.get(species_id, int(FISH_SPECIES[species_id]["base_value"])))
+	var size_multiplier := float(FishCatalog.SIZE_MULTIPLIERS.get(str(catch_record.get("size", "标准")), 1.0))
+	var freshness_multiplier := float(FishCatalog.FRESHNESS_MULTIPLIERS.get(fish_freshness_state(catch_record), 0.4))
+	return maxi(1, int(round(quote * size_multiplier * freshness_multiplier)))
+
+
+func fish_inventory_value() -> int:
+	var total := 0
+	for raw_catch in fish_catch_inventory:
+		total += fish_catch_value(raw_catch)
+	return total
+
+
+func _initialize_fish_market() -> void:
+	fish_market_quotes.clear()
+	fish_market_stock.clear()
+	fish_market_demand.clear()
+	fish_market_reasons.clear()
+	fish_market_refresh_index = 0
+	var market_rng := RandomNumberGenerator.new()
+	market_rng.seed = posmod(daily_seed, 2147483647) ^ 32452843
+	for raw_id in FISH_SPECIES.keys():
+		var species_id := str(raw_id)
+		var fish: Dictionary = FISH_SPECIES[species_id]
+		var rarity := str(fish["rarity"])
+		var stock := market_rng.randi_range(5, 12) if rarity == "普通" else (market_rng.randi_range(2, 7) if rarity == "少见" else market_rng.randi_range(0, 2))
+		if weather == "强风":
+			stock = int(round(stock * 0.65))
+		var demand := market_rng.randi_range(5, 11)
+		if fish["tags"].has("餐厅"):
+			demand += 2
+		if phase_name() == "夜晚" and fish["tags"].has("收藏"):
+			demand += 3
+		fish_market_stock[species_id] = maxi(0, stock)
+		fish_market_demand[species_id] = maxi(1, demand)
+		fish_market_quotes[species_id] = _fish_target_quote(species_id, demand, stock)
+		fish_market_reasons[species_id] = _fish_price_reasons(species_id, stock, demand)
+	_generate_fish_market_orders(market_rng)
+	_record_fish_market_history("清晨开市")
+
+
+func _refresh_fish_market(reason: String) -> void:
+	if fish_market_quotes.is_empty():
+		_initialize_fish_market()
+		return
+	fish_market_refresh_index += 1
+	var market_rng := RandomNumberGenerator.new()
+	market_rng.seed = posmod(daily_seed, 2147483647) ^ (fish_market_refresh_index * 49979687)
+	for raw_id in FISH_SPECIES.keys():
+		var species_id := str(raw_id)
+		var fish: Dictionary = FISH_SPECIES[species_id]
+		var stock := maxi(0, int(fish_market_stock.get(species_id, 0)))
+		var prior_demand := maxi(1, int(fish_market_demand.get(species_id, 1)))
+		var consumption := mini(stock, market_rng.randi_range(1, maxi(1, mini(5, prior_demand))))
+		stock -= consumption
+		var supply_max := 6 if str(fish["rarity"]) == "普通" else (3 if str(fish["rarity"]) == "少见" else 1)
+		var npc_supply := market_rng.randi_range(0, supply_max)
+		if weather == "强风":
+			npc_supply = int(floor(npc_supply * 0.5))
+		elif weather == "阵雨" and fish["weather"].has("阵雨"):
+			npc_supply += 1
+		stock += npc_supply
+		var demand := market_rng.randi_range(4, 10)
+		if fish["tags"].has("餐厅"):
+			demand += 2
+		if phase_name() == "傍晚" and fish["tags"].has("节庆"):
+			demand += 3
+		if phase_name() == "夜晚" and fish["tags"].has("收藏"):
+			demand += 3
+		var target := float(_fish_target_quote(species_id, demand, stock))
+		var previous := float(fish_market_quotes.get(species_id, target))
+		fish_market_stock[species_id] = stock
+		fish_market_demand[species_id] = demand
+		fish_market_quotes[species_id] = maxi(1, int(round(previous * 0.60 + target * 0.40)))
+		fish_market_reasons[species_id] = _fish_price_reasons(species_id, stock, demand)
+	_record_fish_market_history(reason)
+	changed.emit()
+
+
+func _fish_target_quote(species_id: String, demand: int, stock: int) -> int:
+	var base_value := float(FISH_SPECIES[species_id]["base_value"])
+	var supply_demand := clampf(sqrt(float(demand + 1) / float(stock + 1)), 0.60, 2.20)
+	return maxi(1, int(round(base_value * supply_demand)))
+
+
+func _fish_price_reasons(species_id: String, stock: int, demand: int) -> Array:
+	var fish: Dictionary = FISH_SPECIES[species_id]
+	var reasons: Array[String] = []
+	if weather == "强风":
+		reasons.append("强风让渔船到货减少")
+	elif weather == "阵雨" and fish["weather"].has("阵雨"):
+		reasons.append("阵雨海况让该鱼群更活跃")
+	if phase_name() == "傍晚" and fish["tags"].has("节庆"):
+		reasons.append("傍晚宴席正在采购节庆鱼")
+	elif phase_name() == "夜晚" and fish["tags"].has("收藏"):
+		reasons.append("夜市收藏需求增加")
+	elif fish["tags"].has("餐厅"):
+		reasons.append("海鲜餐厅维持采购")
+	if stock >= demand + 4:
+		reasons.append("当前库存充足，报价承压")
+	elif demand >= stock + 4:
+		reasons.append("重点需求高于现有库存")
+	else:
+		reasons.append("居民供需大致平衡")
+	return reasons.slice(0, 3)
+
+
+func _record_fish_market_history(reason: String) -> void:
+	fish_market_history.append({
+		"day": day, "tide": tide, "phase": phase_name(), "reason": reason,
+		"quotes": fish_market_quotes.duplicate(true), "stock": fish_market_stock.duplicate(true),
+		"demand": fish_market_demand.duplicate(true)
+	})
+	while fish_market_history.size() > 32:
+		fish_market_history.pop_front()
+
+
+func _generate_fish_market_orders(market_rng: RandomNumberGenerator) -> void:
+	fish_market_orders.clear()
+	var candidates: Array[String] = []
+	for raw_id in FISH_SPECIES.keys():
+		var species_id := str(raw_id)
+		if FISH_SPECIES[species_id]["tags"].has("餐厅") or FISH_SPECIES[species_id]["tags"].has("收藏"):
+			candidates.append(species_id)
+	for order_index in range(2):
+		var species_id := candidates[market_rng.randi_range(0, candidates.size() - 1)]
+		var quantity := 2 if str(FISH_SPECIES[species_id]["rarity"]) == "普通" else 1
+		var reward_each := maxi(1, int(round(float(fish_market_quotes[species_id]) * (1.35 if order_index == 0 else 1.55))))
+		fish_market_orders.append({
+			"order_id": "order-d%03d-%d" % [day, order_index + 1],
+			"buyer": "海鲜餐厅" if order_index == 0 else "潮灯收藏家",
+			"species_id": species_id,
+			"quantity": quantity,
+			"reward_each": reward_each,
+			"deadline_day": day,
+			"deadline_tide": 12 if order_index == 0 else 16,
+			"completed": false
+		})
+
+
+func fish_market_rows() -> Array:
+	var rows: Array = []
+	for raw_id in FISH_SPECIES.keys():
+		var species_id := str(raw_id)
+		var previous_quote := int(fish_market_quotes.get(species_id, int(FISH_SPECIES[species_id]["base_value"])))
+		if fish_market_history.size() >= 2:
+			var previous: Dictionary = fish_market_history[-2]
+			previous_quote = int(previous.get("quotes", {}).get(species_id, previous_quote))
+		rows.append({
+			"species_id": species_id,
+			"name": FishCatalog.species_name(species_id),
+			"rarity": str(FISH_SPECIES[species_id]["rarity"]),
+			"quote": int(fish_market_quotes.get(species_id, 1)),
+			"change": int(fish_market_quotes.get(species_id, 1)) - previous_quote,
+			"stock": int(fish_market_stock.get(species_id, 0)),
+			"demand": int(fish_market_demand.get(species_id, 0)),
+			"reasons": fish_market_reasons.get(species_id, []).duplicate()
+		})
+	rows.sort_custom(func(a, b): return int(a["quote"]) > int(b["quote"]))
+	return rows
+
+
+func create_fish_sale_preview(catch_ids: Array) -> Dictionary:
+	var selected: Array = []
+	var requested := {}
+	for raw_id in catch_ids:
+		requested[str(raw_id)] = true
+	for raw_catch in fish_catch_inventory:
+		var catch_record: Dictionary = raw_catch
+		if requested.has(str(catch_record.get("catch_id", ""))):
+			selected.append(catch_record.duplicate(true))
+	if selected.is_empty():
+		return {"ok": false, "text": "没有选择可出售的鱼获。"}
+	var demand_remaining := fish_market_demand.duplicate(true)
+	var overflow_counts := {}
+	var lines: Array = []
+	var total := 0
+	for catch_record in selected:
+		var species_id := str(catch_record["species_id"])
+		var quote := int(fish_market_quotes.get(species_id, int(FISH_SPECIES.get(species_id, {}).get("base_value", 1))))
+		var size_multiplier := float(FishCatalog.SIZE_MULTIPLIERS.get(str(catch_record.get("size", "标准")), 1.0))
+		var freshness := fish_freshness_state(catch_record)
+		var freshness_multiplier := float(FishCatalog.FRESHNESS_MULTIPLIERS.get(freshness, 0.4))
+		var remaining := int(demand_remaining.get(species_id, 0))
+		var tier := "重点需求"
+		var raw_unit := float(quote)
+		var demand_consumed := 0
+		if remaining > 0:
+			demand_remaining[species_id] = remaining - 1
+			demand_consumed = 1
+		else:
+			var overflow := int(overflow_counts.get(species_id, 0))
+			var overflow_capacity := maxi(2, int(ceil(float(fish_market_demand.get(species_id, 0)) * 0.5)))
+			if overflow < overflow_capacity:
+				tier = "普通加工85%"
+				raw_unit = quote * 0.85
+			else:
+				tier = "大量加工60%"
+				raw_unit = float(FISH_SPECIES.get(species_id, {}).get("base_value", 1)) * 0.60
+			overflow_counts[species_id] = overflow + 1
+		var unit_price := maxi(1, int(round(raw_unit * size_multiplier * freshness_multiplier)))
+		total += unit_price
+		lines.append({
+			"catch_id": str(catch_record["catch_id"]), "species_id": species_id,
+			"name": FishCatalog.species_name(species_id), "size": str(catch_record["size"]),
+			"freshness": freshness, "tier": tier, "unit_price": unit_price,
+			"demand_consumed": demand_consumed
+		})
+	fish_sale_sequence += 1
+	var sale_id := "sale-d%03d-t%02d-%05d" % [day, tide, fish_sale_sequence]
+	var preview := {"ok": true, "sale_id": sale_id, "lines": lines, "total": total, "count": lines.size()}
+	pending_fish_sales[sale_id] = preview.duplicate(true)
+	return preview
+
+
+func confirm_fish_sale(sale_id: String) -> Dictionary:
+	if processed_fish_sales.has(sale_id):
+		return {"ok": false, "duplicate": true, "text": "这笔成交已经结算，不能重复领取金贝。"}
+	if not pending_fish_sales.has(sale_id):
+		return {"ok": false, "text": "出售预览已经失效，请重新确认当前报价。"}
+	var preview: Dictionary = pending_fish_sales[sale_id]
+	var inventory_by_id := {}
+	for raw_catch in fish_catch_inventory:
+		var catch_record: Dictionary = raw_catch
+		inventory_by_id[str(catch_record.get("catch_id", ""))] = catch_record
+	for raw_line in preview["lines"]:
+		if not inventory_by_id.has(str(raw_line["catch_id"])):
+			pending_fish_sales.erase(sale_id)
+			return {"ok": false, "text": "鱼获箱已经变化，未执行本次出售。"}
+	var sold_ids := {}
+	for raw_line in preview["lines"]:
+		var line: Dictionary = raw_line
+		var species_id := str(line["species_id"])
+		sold_ids[str(line["catch_id"])] = true
+		fish_market_stock[species_id] = int(fish_market_stock.get(species_id, 0)) + 1
+		fish_market_demand[species_id] = maxi(0, int(fish_market_demand.get(species_id, 0)) - int(line.get("demand_consumed", 0)))
+	var retained: Array = []
+	for raw_catch in fish_catch_inventory:
+		if not sold_ids.has(str(raw_catch.get("catch_id", ""))):
+			retained.append(raw_catch)
+	fish_catch_inventory = retained
+	var total := int(preview["total"])
+	cash += total
+	processed_fish_sales[sale_id] = true
+	pending_fish_sales.erase(sale_id)
+	var transaction := {
+		"sale_id": sale_id, "day": day, "tide": tide, "total": total,
+		"count": int(preview["count"]), "lines": preview["lines"].duplicate(true)
+	}
+	fish_market_transactions.append(transaction)
+	while fish_market_transactions.size() > 64:
+		fish_market_transactions.pop_front()
+	_record_wealth("蓝鳍鱼铺 · 出售%d条鱼获" % int(preview["count"]))
+	changed.emit()
+	return {"ok": true, "sale_id": sale_id, "total": total, "count": int(preview["count"]), "text": "蓝鳍鱼铺收购了%d条鱼获，支付%d金贝。" % [int(preview["count"]), total]}
+
+
+func turn_in_fish_order(order_id: String) -> Dictionary:
+	var order_index := -1
+	for index in range(fish_market_orders.size()):
+		if str(fish_market_orders[index].get("order_id", "")) == order_id:
+			order_index = index
+			break
+	if order_index < 0:
+		return {"ok": false, "text": "这个订单已经不在公告板上。"}
+	var order: Dictionary = fish_market_orders[order_index]
+	if bool(order.get("completed", false)):
+		return {"ok": false, "text": "这个订单已经交付。"}
+	if day > int(order["deadline_day"]) or (day == int(order["deadline_day"]) and tide > int(order["deadline_tide"])):
+		return {"ok": false, "text": "这个订单已经超过截止潮刻。"}
+	var qualifying: Array = []
+	for raw_catch in fish_catch_inventory:
+		if str(raw_catch.get("species_id", "")) == str(order["species_id"]):
+			qualifying.append(raw_catch)
+	if qualifying.size() < int(order["quantity"]):
+		return {"ok": false, "text": "还需要%d条%s。" % [int(order["quantity"]), FishCatalog.species_name(str(order["species_id"]))]}
+	qualifying.sort_custom(func(a, b): return int(a["caught_day"]) < int(b["caught_day"]))
+	var used := {}
+	for index in range(int(order["quantity"])):
+		used[str(qualifying[index]["catch_id"])] = true
+	var retained: Array = []
+	for raw_catch in fish_catch_inventory:
+		if not used.has(str(raw_catch.get("catch_id", ""))):
+			retained.append(raw_catch)
+	fish_catch_inventory = retained
+	var reward := int(order["quantity"]) * int(order["reward_each"])
+	cash += reward
+	order["completed"] = true
+	fish_market_orders[order_index] = order
+	_record_wealth("鱼市订单 · %s" % str(order["buyer"]))
+	changed.emit()
+	return {"ok": true, "reward": reward, "text": "%s收下%d条%s，支付%d金贝。" % [str(order["buyer"]), int(order["quantity"]), FishCatalog.species_name(str(order["species_id"])), reward]}
 
 
 func activate_aqiu_request() -> void:
@@ -1242,12 +2180,14 @@ func _poker_open_next_round() -> void:
 			seat["action"] = "已全投 · 等待解契"
 		seats[seat_index] = seat
 	poker["seats"] = seats
-	var first_actor := _next_table_seat(int(poker["dealer_seat"]))
+	var first_seat_after_dealer := _next_table_seat(int(poker["dealer_seat"]))
+	var first_actor := _next_needing_seat(posmod(first_seat_after_dealer - 1, 6))
 	poker["first_actor_seat"] = first_actor
 	poker["first_action_index"] = first_actor - 1 if first_actor > 0 else -1
-	poker["current_actor"] = _next_needing_seat(posmod(first_actor - 1, 6))
-	poker["action_log"].append("进入%s，首位行动：%s。" % [poker_stage_name(), _seat_name(first_actor)])
-	_append_oracle_event("stage_opened", {"stage": poker_stage_name(), "visible_community": _oracle_cards_for_record(poker_visible_community()), "pot": _poker_total_committed(), "first_actor": _seat_name(first_actor)})
+	poker["current_actor"] = first_actor
+	var first_actor_name := _seat_name(first_actor) if first_actor >= 0 else "无人仍可行动"
+	poker["action_log"].append("进入%s，首位行动：%s。" % [poker_stage_name(), first_actor_name])
+	_append_oracle_event("stage_opened", {"stage": poker_stage_name(), "visible_community": _oracle_cards_for_record(poker_visible_community()), "pot": _poker_total_committed(), "first_actor": first_actor_name})
 
 
 func _poker_apply_action(seat_index: int, action: String, raise_amount: int = 0) -> Dictionary:

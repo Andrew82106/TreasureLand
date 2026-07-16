@@ -17,6 +17,13 @@ COMMAND_TIMEOUT_SECONDS = 120
 
 BLOCKING_TESTS: tuple[tuple[str, str], ...] = (
     ("res://tests/discovery_system_test.gd", "DISCOVERY SYSTEM TEST PASS"),
+    (
+        "res://tests/synthesis_signal_lifetime_test.gd",
+        "SYNTHESIS SIGNAL LIFETIME TEST PASS",
+    ),
+    ("res://tests/world_time_save_test.gd", "WORLD TIME SAVE TEST PASS"),
+    ("res://tests/fish_market_system_test.gd", "FISH MARKET SYSTEM TEST PASS"),
+    ("res://tests/dive_ui_flow_test.gd", "DIVE UI FLOW TEST PASS"),
     ("res://tests/smoke_test.gd", "SMOKE TEST PASS"),
     (
         "res://tests/poker_state_machine_stress_test.gd",
@@ -29,6 +36,7 @@ BLOCKING_TESTS: tuple[tuple[str, str], ...] = (
         "res://tests/pixel_character_animator_test.gd",
         "PIXEL CHARACTER ANIMATOR TEST PASS",
     ),
+    ("res://tests/world_layout_test.gd", "WORLD LAYOUT TEST PASS"),
 )
 
 
@@ -132,6 +140,12 @@ def run_suite(godot: str, project: Path) -> int:
         return 1
 
     failures: list[str] = []
+    runtime_error_markers = (
+        "SCRIPT ERROR:",
+        "\nERROR:",
+        "CrashHandlerException:",
+        "Program crashed with signal",
+    )
     for test_path, pass_marker in BLOCKING_TESTS:
         code, output = stream_command(
             [godot, "--headless", "--path", str(project), "--script", test_path],
@@ -141,6 +155,8 @@ def run_suite(godot: str, project: Path) -> int:
             failures.append(f"{test_path}: exited with code {code}")
             if code == 124:
                 break
+        elif any(marker in output for marker in runtime_error_markers):
+            failures.append(f"{test_path}: Godot reported a runtime error despite exit code 0")
         elif pass_marker not in output:
             failures.append(f"{test_path}: missing pass marker {pass_marker!r}")
 
