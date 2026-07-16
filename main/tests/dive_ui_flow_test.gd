@@ -20,6 +20,14 @@ func _run() -> void:
 	await process_frame
 	assert(table.visible and table.mode == "prep" and table.page_root.size.round() == Vector2(1280, 720), "潜捕准备必须是独立全屏页面。")
 	assert(_tree_has_text(table, "白沙浅湾") and _tree_has_text(table, "珊瑚礁棚") and _tree_has_text(table, "沉船外缘"), "准备页必须同时展示三个区域与开放条件。")
+	table._show_mode("equipment")
+	await process_frame
+	assert(table.mode == "equipment" and _tree_has_text(table, "呼吸设备") and _tree_has_text(table, "脚蹼") and _tree_has_text(table, "鱼篓") and _tree_has_text(table, "保存箱"), "装备工坊必须在潜捕全屏页内展示四类长期装备。")
+	table._buy_equipment("oxygen")
+	await process_frame
+	assert(int(state.dive_equipment_levels["oxygen"]) == 1 and _tree_has_text(table, "密封浮囊"), "装备页真实按钮必须完成购买、刷新并显示新等级。")
+	table._show_mode("prep")
+	await process_frame
 
 	table._start_dive("sand_shallows")
 	await process_frame
@@ -48,6 +56,7 @@ func _run() -> void:
 	table._show_mode("market")
 	await process_frame
 	assert(table.mode == "market" and _tree_has_text(table, "当前报价") and _tree_has_text(table, "你的鱼获箱"), "蓝鳍鱼铺必须同时展示供需行情和独立鱼获箱。")
+	assert(_tree_has_text(table, "渔民专单") and _tree_has_text(table, "厨师专单") and _tree_has_text(table, "收藏家专单"), "鱼铺必须显式展示三类人物专属订单，不得折叠成无来源通用订单。")
 	var cash_before := state.cash
 	table._preview_all_sale()
 	await process_frame

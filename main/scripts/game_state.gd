@@ -10,6 +10,7 @@ const FishCatalog = preload("res://scripts/fish_catalog.gd")
 const NpcCatalog = preload("res://scripts/npc_catalog.gd")
 const ShareMarketCatalog = preload("res://scripts/share_catalog.gd")
 const HomeCatalog = preload("res://scripts/home_catalog.gd")
+const DiveEquipmentCatalog = preload("res://scripts/dive_equipment_catalog.gd")
 const ITEMS := SynthesisCatalog.ITEMS
 const RECIPES := SynthesisCatalog.RECIPES
 const FISH_SPECIES := FishCatalog.SPECIES
@@ -84,7 +85,7 @@ const TIME_STATE_UI := "ui_paused"
 const TIME_STATE_ACTIVITY := "activity_snapshot"
 const TIME_STATE_FAST_FORWARD := "fast_forward"
 const TIME_STATE_DAY_END := "day_end_hold"
-const SAVE_VERSION := 7
+const SAVE_VERSION := 8
 const MANUAL_SAVE_PATH := "user://saves/manual_save.json"
 const POKER_TIERS := [
 	{"name": "潮边小桌", "buy_in": 80, "wealth_required": 0, "small_blind": 1, "big_blind": 2, "description": "认识规则与人物，输赢幅度较小"},
@@ -189,6 +190,7 @@ var fish_sale_sequence: int = 0
 var pending_fish_sales := {}
 var processed_fish_sales := {}
 var dive_equipment := {"oxygen": 50.0, "basket": 4, "swim_speed": 1.0, "preservation_days": 0}
+var dive_equipment_levels := DiveEquipmentCatalog.default_levels()
 var last_dive_result := {}
 var share_market_unlocked: bool = false
 var share_market_day: int = 1
@@ -244,6 +246,12 @@ var poker_npc_brought: Array = []
 var poker_npc_present: Array = []
 var recent_oracle_records: Array = []
 var wealth_history: Array = []
+var economy_events: Array = []
+var economy_event_sequence: int = 0
+var day_end_reports: Array = []
+var economy_day_opening := {}
+var relief_last_day: int = 0
+var relief_history: Array = []
 var recording_enabled: bool = true
 var oracle_record_relative_path: String = "user://play_records/oracle_table.jsonl"
 var rng := RandomNumberGenerator.new()
@@ -261,6 +269,7 @@ func _init() -> void:
 	_initialize_share_market()
 	_load_recent_oracle_records()
 	_record_wealth("来到万物之岛", true)
+	_begin_economy_day()
 
 
 func can_save_game() -> bool:
@@ -331,6 +340,7 @@ func build_save_data(world_state: Dictionary = {}) -> Dictionary:
 			"fish_sale_sequence": fish_sale_sequence,
 			"processed_fish_sales": processed_fish_sales.duplicate(true),
 			"dive_equipment": dive_equipment.duplicate(true),
+			"dive_equipment_levels": dive_equipment_levels.duplicate(true),
 			"last_dive_result": last_dive_result.duplicate(true),
 			"share_market_unlocked": share_market_unlocked,
 			"share_market_day": share_market_day,
@@ -367,7 +377,13 @@ func build_save_data(world_state: Dictionary = {}) -> Dictionary:
 			"poker_npc_wallets": poker_npc_wallets.duplicate(true),
 			"poker_npc_brought": poker_npc_brought.duplicate(true),
 			"poker_npc_present": poker_npc_present.duplicate(true),
-			"wealth_history": wealth_history.duplicate(true)
+			"wealth_history": wealth_history.duplicate(true),
+			"economy_events": economy_events.duplicate(true),
+			"economy_event_sequence": economy_event_sequence,
+			"day_end_reports": day_end_reports.duplicate(true),
+			"economy_day_opening": economy_day_opening.duplicate(true),
+			"relief_last_day": relief_last_day,
+			"relief_history": relief_history.duplicate(true)
 		},
 		"world": world_state.duplicate(true)
 	}
@@ -509,6 +525,13 @@ func restore_save_data(data: Dictionary) -> Dictionary:
 	processed_fish_sales = saved.get("processed_fish_sales", {}).duplicate(true)
 	pending_fish_sales.clear()
 	dive_equipment = saved.get("dive_equipment", {"oxygen": 50.0, "basket": 4, "swim_speed": 1.0, "preservation_days": 0}).duplicate(true)
+	if saved.has("dive_equipment_levels"):
+		dive_equipment_levels = saved.get("dive_equipment_levels", DiveEquipmentCatalog.default_levels()).duplicate(true)
+	else:
+		dive_equipment_levels = DiveEquipmentCatalog.infer_levels(dive_equipment)
+	for slot_id in DiveEquipmentCatalog.SLOT_ORDER:
+		dive_equipment_levels[slot_id] = clampi(int(dive_equipment_levels.get(slot_id, 0)), 0, DiveEquipmentCatalog.max_level(slot_id))
+	_sync_dive_equipment_values()
 	last_dive_result = saved.get("last_dive_result", {}).duplicate(true)
 	share_market_unlocked = bool(saved.get("share_market_unlocked", false))
 	share_market_day = maxi(1, int(saved.get("share_market_day", day)))
@@ -561,8 +584,16 @@ func restore_save_data(data: Dictionary) -> Dictionary:
 	poker_npc_brought = saved.get("poker_npc_brought", []).duplicate(true)
 	poker_npc_present = saved.get("poker_npc_present", []).duplicate(true)
 	wealth_history = saved.get("wealth_history", []).duplicate(true)
+	economy_events = saved.get("economy_events", []).duplicate(true)
+	economy_event_sequence = maxi(0, int(saved.get("economy_event_sequence", economy_events.size())))
+	day_end_reports = saved.get("day_end_reports", []).duplicate(true)
+	economy_day_opening = saved.get("economy_day_opening", {}).duplicate(true)
+	relief_last_day = maxi(0, int(saved.get("relief_last_day", 0)))
+	relief_history = saved.get("relief_history", []).duplicate(true)
 	if wealth_history.is_empty():
 		_record_wealth("读取旧存档", true)
+	if economy_day_opening.is_empty() or int(economy_day_opening.get("day", 0)) != day:
+		_begin_economy_day()
 	poker.clear()
 	poker_session_active = false
 	poker_session_id = ""
@@ -598,10 +629,10 @@ func _validate_save_data(data: Dictionary) -> Dictionary:
 	if not data.get("state", {}) is Dictionary or not data.get("world", {}) is Dictionary:
 		return {"ok": false, "text": "存档结构损坏，未修改当前进度。"}
 	var saved: Dictionary = data["state"]
-	for key in ["daily_schedule", "discovered", "discovery_records", "tower_milestones", "attempted_pairs", "relationships", "memories", "known_npcs", "npc_topic_reads", "npc_request_states", "npc_shared_creations", "npc_shared_fish", "npc_deep_talk_days", "npc_talk_counts", "npc_memory_rewarded", "dive_state", "marine_discoveries", "marine_size_records", "fish_market_quotes", "fish_market_stock", "fish_market_demand", "fish_market_reasons", "processed_fish_sales", "dive_equipment", "last_dive_result", "share_quotes", "share_previous_quotes", "share_next_quotes", "share_company_reports", "share_lots", "finale_summary"]:
+	for key in ["daily_schedule", "discovered", "discovery_records", "tower_milestones", "attempted_pairs", "relationships", "memories", "known_npcs", "npc_topic_reads", "npc_request_states", "npc_shared_creations", "npc_shared_fish", "npc_deep_talk_days", "npc_talk_counts", "npc_memory_rewarded", "dive_state", "marine_discoveries", "marine_size_records", "fish_market_quotes", "fish_market_stock", "fish_market_demand", "fish_market_reasons", "processed_fish_sales", "dive_equipment", "dive_equipment_levels", "last_dive_result", "share_quotes", "share_previous_quotes", "share_next_quotes", "share_company_reports", "share_lots", "finale_summary", "economy_day_opening"]:
 		if saved.has(key) and not saved[key] is Dictionary:
 			return {"ok": false, "text": "存档字段%s损坏，未修改当前进度。" % key}
-	for key in ["time_event_log", "recent_synthesis_pairs", "wealth_history", "poker_npc_wallets", "poker_npc_brought", "poker_npc_present", "poker_session_history", "poker_invitations", "race_events", "race_history", "fish_catch_inventory", "fish_market_orders", "fish_market_history", "fish_market_transactions", "share_pending_orders", "share_trade_history", "share_price_history", "share_dividend_history", "home_display_items", "home_aquarium", "home_guest_history"]:
+	for key in ["time_event_log", "recent_synthesis_pairs", "wealth_history", "economy_events", "day_end_reports", "relief_history", "poker_npc_wallets", "poker_npc_brought", "poker_npc_present", "poker_session_history", "poker_invitations", "race_events", "race_history", "fish_catch_inventory", "fish_market_orders", "fish_market_history", "fish_market_transactions", "share_pending_orders", "share_trade_history", "share_price_history", "share_dividend_history", "home_display_items", "home_aquarium", "home_guest_history"]:
 		if saved.has(key) and not saved[key] is Array:
 			return {"ok": false, "text": "存档字段%s损坏，未修改当前进度。" % key}
 	return {"ok": true}
@@ -663,9 +694,12 @@ func _record_wealth(reason: String, force: bool = false) -> void:
 	var point := _wealth_snapshot(reason)
 	if not force and not wealth_history.is_empty() and _same_wealth_snapshot(wealth_history[wealth_history.size() - 1], point):
 		return
+	var previous: Dictionary = wealth_history[wealth_history.size() - 1] if not wealth_history.is_empty() else {}
 	wealth_history.append(point)
 	if wealth_history.size() > 200:
 		wealth_history.pop_front()
+	if not previous.is_empty() and not reason.begins_with("第"):
+		_append_economy_event(previous, point, reason)
 
 
 func _wealth_snapshot(reason: String) -> Dictionary:
@@ -691,6 +725,206 @@ func _same_wealth_snapshot(a: Dictionary, b: Dictionary) -> bool:
 		and int(a.get("locked", 0)) == int(b.get("locked", 0)) \
 		and int(a.get("share_reserved", 0)) == int(b.get("share_reserved", 0)) \
 		and int(a.get("assets", 0)) == int(b.get("assets", 0))
+
+
+func _append_economy_event(previous: Dictionary, current: Dictionary, reason: String) -> void:
+	var cash_delta := int(current.get("cash", 0)) - int(previous.get("cash", 0))
+	var locked_delta := int(current.get("locked", 0)) + int(current.get("share_reserved", 0)) \
+		- int(previous.get("locked", 0)) - int(previous.get("share_reserved", 0))
+	var fish_delta := int(current.get("fish_assets", 0)) - int(previous.get("fish_assets", 0))
+	var share_delta := int(current.get("share_assets", 0)) - int(previous.get("share_assets", 0))
+	var account_delta := int(current.get("account_wealth", 0)) - int(previous.get("account_wealth", 0))
+	var net_delta := int(current.get("net_worth", 0)) - int(previous.get("net_worth", 0))
+	if cash_delta == 0 and locked_delta == 0 and fish_delta == 0 and share_delta == 0 and net_delta == 0:
+		return
+	economy_event_sequence += 1
+	var category := _economy_category(reason)
+	economy_events.append({
+		"event_id": "economy-%06d" % economy_event_sequence,
+		"day": day,
+		"tide": tide,
+		"reason": reason,
+		"category": str(category["id"]),
+		"category_name": str(category["name"]),
+		"cash_delta": cash_delta,
+		"cash_in": maxi(0, cash_delta),
+		"cash_out": maxi(0, -cash_delta),
+		"locked_delta": locked_delta,
+		"fish_asset_delta": fish_delta,
+		"share_asset_delta": share_delta,
+		"asset_delta": fish_delta + share_delta,
+		"account_delta": account_delta,
+		"net_delta": net_delta,
+		"transfer": account_delta == 0 and cash_delta != 0 and locked_delta == -cash_delta
+	})
+	while economy_events.size() > 512:
+		economy_events.pop_front()
+
+
+func _economy_category(reason: String) -> Dictionary:
+	if reason.begins_with("万物实验"):
+		return {"id": "synthesis", "name": "万物实验"}
+	if reason.begins_with("商店服务"):
+		return {"id": "shop", "name": "研究服务"}
+	if reason.begins_with("海岸潜捕"):
+		return {"id": "dive", "name": "海岸潜捕"}
+	if reason.begins_with("蓝鳍鱼铺"):
+		return {"id": "fish_market", "name": "鱼铺出售"}
+	if reason.begins_with("鱼市订单"):
+		return {"id": "fish_order", "name": "人物订单"}
+	if reason.begins_with("潜捕装备"):
+		return {"id": "equipment", "name": "潜捕装备"}
+	if reason.begins_with("商会份契"):
+		return {"id": "shares", "name": "商会份契"}
+	if reason.begins_with("市场开盘重估"):
+		return {"id": "valuation", "name": "市场开盘重估"}
+	if reason.begins_with("鱼市重估"):
+		return {"id": "valuation", "name": "市场重估"}
+	if reason.begins_with("逐风竞速"):
+		return {"id": "race", "name": "逐风竞速"}
+	if reason.begins_with("命运牌会"):
+		return {"id": "poker", "name": "命运牌会"}
+	if reason.begins_with("居所") or reason == "归潮盛典":
+		return {"id": "home", "name": "居所收藏"}
+	if reason.begins_with("巡岸修缮"):
+		return {"id": "relief", "name": "巡岸修缮"}
+	if reason.begins_with("完成"):
+		return {"id": "social", "name": "人物委托"}
+	return {"id": "other", "name": "其他变化"}
+
+
+func _begin_economy_day() -> void:
+	var opening := _wealth_snapshot("第%d日期初" % day)
+	economy_day_opening = {
+		"day": day,
+		"cash": int(opening["cash"]),
+		"locked": int(opening["locked"]),
+		"share_reserved": int(opening["share_reserved"]),
+		"fish_assets": int(opening["fish_assets"]),
+		"share_assets": int(opening["share_assets"]),
+		"account_wealth": int(opening["account_wealth"]),
+		"net_worth": int(opening["net_worth"])
+	}
+
+
+func _economy_report_for_day(report_day: int) -> Dictionary:
+	var opening: Dictionary = economy_day_opening if int(economy_day_opening.get("day", 0)) == report_day else {}
+	if opening.is_empty():
+		var fallback := _wealth_snapshot("期初缺省")
+		opening = {
+			"day": report_day, "cash": int(fallback["cash"]), "locked": int(fallback["locked"]),
+			"share_reserved": int(fallback["share_reserved"]), "fish_assets": int(fallback["fish_assets"]),
+			"share_assets": int(fallback["share_assets"]), "account_wealth": int(fallback["account_wealth"]),
+			"net_worth": int(fallback["net_worth"])
+		}
+	var closing := _wealth_snapshot("第%d日期末" % report_day)
+	var cash_in := 0
+	var cash_out := 0
+	var categories := {}
+	var event_count := 0
+	for raw_event in economy_events:
+		if not raw_event is Dictionary or int(raw_event.get("day", 0)) != report_day:
+			continue
+		var event: Dictionary = raw_event
+		event_count += 1
+		cash_in += int(event.get("cash_in", 0))
+		cash_out += int(event.get("cash_out", 0))
+		var category_id := str(event.get("category", "other"))
+		var row: Dictionary = categories.get(category_id, {
+			"id": category_id, "name": str(event.get("category_name", "其他变化")),
+			"cash_in": 0, "cash_out": 0, "account_delta": 0, "asset_delta": 0,
+			"net_delta": 0, "events": 0, "transfers": 0
+		})
+		row["cash_in"] = int(row["cash_in"]) + int(event.get("cash_in", 0))
+		row["cash_out"] = int(row["cash_out"]) + int(event.get("cash_out", 0))
+		row["account_delta"] = int(row["account_delta"]) + int(event.get("account_delta", 0))
+		row["asset_delta"] = int(row["asset_delta"]) + int(event.get("asset_delta", 0))
+		row["net_delta"] = int(row["net_delta"]) + int(event.get("net_delta", 0))
+		row["events"] = int(row["events"]) + 1
+		if bool(event.get("transfer", false)):
+			row["transfers"] = int(row["transfers"]) + 1
+		categories[category_id] = row
+	var category_rows: Array = categories.values()
+	category_rows.sort_custom(func(a, b): return int(a["cash_in"]) + int(a["cash_out"]) > int(b["cash_in"]) + int(b["cash_out"]))
+	var expected_cash := int(opening.get("cash", 0)) + cash_in - cash_out
+	return {
+		"day": report_day,
+		"opening": opening.duplicate(true),
+		"closing": {
+			"cash": int(closing["cash"]), "locked": int(closing["locked"]),
+			"share_reserved": int(closing["share_reserved"]), "fish_assets": int(closing["fish_assets"]),
+			"share_assets": int(closing["share_assets"]), "account_wealth": int(closing["account_wealth"]),
+			"net_worth": int(closing["net_worth"])
+		},
+		"cash_in": cash_in,
+		"cash_out": cash_out,
+		"cash_delta": int(closing["cash"]) - int(opening.get("cash", 0)),
+		"account_delta": int(closing["account_wealth"]) - int(opening.get("account_wealth", 0)),
+		"net_delta": int(closing["net_worth"]) - int(opening.get("net_worth", 0)),
+		"event_count": event_count,
+		"categories": category_rows,
+		"cash_balanced": expected_cash == int(closing["cash"]),
+		"expected_cash": expected_cash
+	}
+
+
+func current_day_economy_summary() -> Dictionary:
+	return _economy_report_for_day(day)
+
+
+func latest_day_end_report() -> Dictionary:
+	return day_end_reports[0].duplicate(true) if not day_end_reports.is_empty() else {}
+
+
+func economy_activity_totals() -> Array:
+	var totals := {}
+	for raw_event in economy_events:
+		if not raw_event is Dictionary:
+			continue
+		var event: Dictionary = raw_event
+		var category_id := str(event.get("category", "other"))
+		var row: Dictionary = totals.get(category_id, {
+			"id": category_id, "name": str(event.get("category_name", "其他变化")),
+			"cash_in": 0, "cash_out": 0, "net_delta": 0, "events": 0
+		})
+		row["cash_in"] = int(row["cash_in"]) + int(event.get("cash_in", 0))
+		row["cash_out"] = int(row["cash_out"]) + int(event.get("cash_out", 0))
+		row["net_delta"] = int(row["net_delta"]) + int(event.get("net_delta", 0))
+		row["events"] = int(row["events"]) + 1
+		totals[category_id] = row
+	var rows: Array = totals.values()
+	rows.sort_custom(func(a, b): return abs(int(a["net_delta"])) > abs(int(b["net_delta"])))
+	return rows
+
+
+func relief_work_status() -> Dictionary:
+	if relief_last_day == day:
+		return {"available": false, "reason": "今天已经完成过巡岸修缮。", "reward": 40, "time_cost": 1.0}
+	if day_end_pending or dive_active or poker_session_active or locked_principal > 0:
+		return {"available": false, "reason": "当前活动或日终尚未结算。", "reward": 40, "time_cost": 1.0}
+	if account_wealth() >= 80 or share_liquidation_value() > 0:
+		return {"available": false, "reason": "账户或份契仍足以安排下一步。", "reward": 40, "time_cost": 1.0}
+	if not fish_catch_inventory.is_empty():
+		return {"available": false, "reason": "鱼获箱里还有可出售或交付的鱼获。", "reward": 40, "time_cost": 1.0}
+	if dive_windows_remaining > 0:
+		return {"available": false, "reason": "海岸仍有有效鱼群窗口，潜捕是优先恢复路线。", "reward": 40, "time_cost": 1.0}
+	return {"available": true, "reason": "鱼群窗口已用尽且可动用资产不足，可领取一次公开修缮工作。", "reward": 40, "time_cost": 1.0}
+
+
+func perform_relief_work() -> Dictionary:
+	var status := relief_work_status()
+	if not bool(status.get("available", false)):
+		return {"ok": false, "text": str(status.get("reason", "当前没有可领取的修缮工作。"))}
+	relief_last_day = day
+	var reward := int(status["reward"])
+	cash += reward
+	relief_history.push_front({"day": day, "tide": tide, "reward": reward, "work": "巡岸修缮"})
+	if relief_history.size() > 32:
+		relief_history.resize(32)
+	_record_wealth("巡岸修缮 · 公所日结工")
+	advance_time_fraction(float(status["time_cost"]), "巡岸修缮")
+	changed.emit()
+	return {"ok": true, "reward": reward, "time_cost": float(status["time_cost"]), "text": "你完成了巡岸修缮，获得%d金贝；统一推进1潮刻。" % reward}
 
 
 func wealth_title() -> String:
@@ -1277,15 +1511,21 @@ func _record_time_event(kind: String, source: String) -> void:
 
 
 func sleep_to_next_day() -> void:
-	_settle_share_market_day(day)
+	var closing_day := day
+	_settle_share_market_day(closing_day)
+	var report := _economy_report_for_day(closing_day)
+	day_end_reports.push_front(report)
+	if day_end_reports.size() > 32:
+		day_end_reports.resize(32)
 	day += 1
 	tide = 1
 	tide_progress = 0.0
 	day_end_pending = false
 	time_pause_reasons.clear()
 	time_state = TIME_STATE_WORLD
+	_begin_economy_day()
 	refresh_day()
-	_record_wealth("第%d天开始" % day, true)
+	_record_wealth("市场开盘重估 · 第%d天" % day, true)
 	changed.emit()
 	_notice("新的一天开始了。商店、天气和赛事已经刷新。")
 
@@ -2115,13 +2355,71 @@ func _next_synthesis_hint_record() -> Dictionary:
 	return {}
 
 
+func _sync_dive_equipment_values() -> void:
+	dive_equipment = DiveEquipmentCatalog.values_for_levels(dive_equipment_levels)
+
+
+func dive_equipment_rows() -> Array:
+	var rows: Array = []
+	for slot_id in DiveEquipmentCatalog.SLOT_ORDER:
+		var slot: Dictionary = DiveEquipmentCatalog.SLOTS[slot_id]
+		var level := clampi(int(dive_equipment_levels.get(slot_id, 0)), 0, DiveEquipmentCatalog.max_level(slot_id))
+		var current := DiveEquipmentCatalog.tier(slot_id, level)
+		var next := DiveEquipmentCatalog.tier(slot_id, level + 1) if level < DiveEquipmentCatalog.max_level(slot_id) else {}
+		var requirement_id := str(next.get("requirement", ""))
+		var requirement_met := requirement_id.is_empty() or is_discovered(requirement_id)
+		rows.append({
+			"slot_id": slot_id,
+			"name": str(slot["name"]),
+			"description": str(slot["description"]),
+			"level": level,
+			"max_level": DiveEquipmentCatalog.max_level(slot_id),
+			"current_name": str(current.get("name", "基础装备")),
+			"current_value": current.get("value", 0),
+			"unit": str(slot["unit"]),
+			"maxed": next.is_empty(),
+			"next_name": str(next.get("name", "")),
+			"next_value": next.get("value", current.get("value", 0)),
+			"cost": int(next.get("cost", 0)),
+			"requirement_id": requirement_id,
+			"requirement_name": item_name(requirement_id) if not requirement_id.is_empty() else "",
+			"requirement_met": requirement_met,
+			"affordable": cash >= int(next.get("cost", 0))
+		})
+	return rows
+
+
+func buy_dive_equipment_upgrade(slot_id: String) -> Dictionary:
+	if dive_active or poker_session_active or locked_principal > 0:
+		return {"ok": false, "text": "活动结算期间不能改装潜捕装备。"}
+	if not DiveEquipmentCatalog.SLOTS.has(slot_id):
+		return {"ok": false, "text": "未知的潜捕装备槽。"}
+	var level := clampi(int(dive_equipment_levels.get(slot_id, 0)), 0, DiveEquipmentCatalog.max_level(slot_id))
+	if level >= DiveEquipmentCatalog.max_level(slot_id):
+		return {"ok": false, "text": "这类装备已经完成全部升级。"}
+	var next := DiveEquipmentCatalog.tier(slot_id, level + 1)
+	var requirement_id := str(next.get("requirement", ""))
+	if not requirement_id.is_empty() and not is_discovered(requirement_id):
+		return {"ok": false, "text": "需要先发现%s，才能理解这项改装。" % item_name(requirement_id)}
+	var cost := int(next.get("cost", 0))
+	if cash < cost:
+		return {"ok": false, "text": "需要%d金贝，当前只有%d金贝。" % [cost, cash]}
+	cash -= cost
+	dive_equipment_levels[slot_id] = level + 1
+	_sync_dive_equipment_values()
+	var slot: Dictionary = DiveEquipmentCatalog.SLOTS[slot_id]
+	_record_wealth("潜捕装备 · %s升级为%s" % [str(slot["name"]), str(next["name"])])
+	changed.emit()
+	return {"ok": true, "cost": cost, "slot_id": slot_id, "level": level + 1, "text": "%s已升级为%s，支付%d金贝。" % [str(slot["name"]), str(next["name"]), cost]}
+
+
 func dive_area_unlocked(area_id: String) -> bool:
 	if area_id == "sand_shallows":
 		return true
 	if area_id == "coral_shelf":
 		return dive_sequence > 0 or not marine_discoveries.is_empty()
 	if area_id == "wreck_edge":
-		return marine_discoveries.size() >= 5 or is_discovered("water_jar")
+		return marine_discoveries.size() >= 5 or is_discovered("water_jar") or int(dive_equipment_levels.get("oxygen", 0)) >= 2
 	return false
 
 
@@ -2360,7 +2658,7 @@ func fish_once() -> Dictionary:
 
 
 func fish_freshness_state(catch_record: Dictionary) -> String:
-	var preservation := clampi(int(dive_equipment.get("preservation_days", 0)), 0, 1)
+	var preservation := clampi(int(dive_equipment.get("preservation_days", 0)), 0, 2)
 	var age := maxi(0, day - int(catch_record.get("caught_day", day)) - preservation)
 	if age <= 0:
 		return "鲜活"
@@ -2449,6 +2747,7 @@ func _refresh_fish_market(reason: String) -> void:
 		fish_market_quotes[species_id] = maxi(1, int(round(previous * 0.60 + target * 0.40)))
 		fish_market_reasons[species_id] = _fish_price_reasons(species_id, stock, demand)
 	_record_fish_market_history(reason)
+	_record_wealth("鱼市重估 · %s" % reason)
 	changed.emit()
 
 
@@ -2492,25 +2791,83 @@ func _record_fish_market_history(reason: String) -> void:
 
 func _generate_fish_market_orders(market_rng: RandomNumberGenerator) -> void:
 	fish_market_orders.clear()
-	var candidates: Array[String] = []
-	for raw_id in FISH_SPECIES.keys():
-		var species_id := str(raw_id)
-		if FISH_SPECIES[species_id]["tags"].has("餐厅") or FISH_SPECIES[species_id]["tags"].has("收藏"):
-			candidates.append(species_id)
-	for order_index in range(2):
-		var species_id := candidates[market_rng.randi_range(0, candidates.size() - 1)]
-		var quantity := 2 if str(FISH_SPECIES[species_id]["rarity"]) == "普通" else 1
-		var reward_each := maxi(1, int(round(float(fish_market_quotes[species_id]) * (1.35 if order_index == 0 else 1.55))))
+	var fisher_candidates := _fish_order_candidates([], true)
+	var chef_candidates := _fish_order_candidates(["餐厅"], true)
+	var collector_candidates := _fish_order_candidates(["观赏", "收藏"], false)
+	var definitions := [
+		{
+			"role": "渔民专单", "buyer": "老乔的海况记录", "npc_id": "old_joe",
+			"candidates": fisher_candidates, "quantity": 2, "premium": 1.25,
+			"min_size": "", "freshness": "", "deadline_tide": 16,
+			"relationship_required": 0, "relationship_reward": 2,
+			"brief": "记录常见鱼群的真实到岸情况"
+		},
+		{
+			"role": "厨师专单", "buyer": "榕奶奶的灶台", "npc_id": "granny",
+			"candidates": chef_candidates, "quantity": 2, "premium": 1.55,
+			"min_size": "", "freshness": "尚鲜", "deadline_tide": 12,
+			"relationship_required": 0, "relationship_reward": 2,
+			"brief": "只收适合当天料理的鲜活食材"
+		},
+		{
+			"role": "收藏家专单", "buyer": "米娅与潮灯收藏家", "npc_id": "mia",
+			"candidates": collector_candidates, "quantity": 1, "premium": 1.90,
+			"min_size": "标准", "freshness": "尚鲜", "deadline_tide": 16,
+			"relationship_required": 10, "relationship_reward": 3,
+			"brief": "为海生专栏寻找体态完整的观赏记录"
+		}
+	]
+	for order_index in range(definitions.size()):
+		var definition: Dictionary = definitions[order_index]
+		var candidates: Array = definition["candidates"]
+		if candidates.is_empty():
+			continue
+		var species_id := str(candidates[market_rng.randi_range(0, candidates.size() - 1)])
+		var quantity := int(definition["quantity"])
+		if str(FISH_SPECIES[species_id]["rarity"]) != "普通":
+			quantity = 1
+		var reward_each := maxi(1, int(round(float(fish_market_quotes[species_id]) * float(definition["premium"]))))
 		fish_market_orders.append({
 			"order_id": "order-d%03d-%d" % [day, order_index + 1],
-			"buyer": "海鲜餐厅" if order_index == 0 else "潮灯收藏家",
+			"role": str(definition["role"]),
+			"buyer": str(definition["buyer"]),
+			"npc_id": str(definition["npc_id"]),
+			"brief": str(definition["brief"]),
 			"species_id": species_id,
 			"quantity": quantity,
 			"reward_each": reward_each,
+			"min_size": str(definition["min_size"]),
+			"freshness_required": str(definition["freshness"]),
+			"relationship_required": int(definition["relationship_required"]),
+			"relationship_reward": int(definition["relationship_reward"]),
 			"deadline_day": day,
-			"deadline_tide": 12 if order_index == 0 else 16,
+			"deadline_tide": int(definition["deadline_tide"]),
 			"completed": false
 		})
+
+
+func _fish_order_candidates(required_tags: Array, accessible_only: bool) -> Array[String]:
+	var candidates: Array[String] = []
+	for raw_id in FISH_SPECIES.keys():
+		var species_id := str(raw_id)
+		var species: Dictionary = FISH_SPECIES[species_id]
+		var tag_match := required_tags.is_empty()
+		for raw_tag in required_tags:
+			if species["tags"].has(str(raw_tag)):
+				tag_match = true
+				break
+		if not tag_match:
+			continue
+		if accessible_only:
+			var reachable := false
+			for raw_area_id in species["habitats"]:
+				if dive_area_unlocked(str(raw_area_id)):
+					reachable = true
+					break
+			if not reachable:
+				continue
+		candidates.append(species_id)
+	return candidates
 
 
 func fish_market_rows() -> Array:
@@ -2643,12 +3000,26 @@ func turn_in_fish_order(order_id: String) -> Dictionary:
 		return {"ok": false, "text": "这个订单已经交付。"}
 	if day > int(order["deadline_day"]) or (day == int(order["deadline_day"]) and tide > int(order["deadline_tide"])):
 		return {"ok": false, "text": "这个订单已经超过截止潮刻。"}
+	var npc_id := str(order.get("npc_id", ""))
+	var relationship_required := int(order.get("relationship_required", 0))
+	if not npc_id.is_empty() and int(relationships.get(npc_id, 0)) < relationship_required:
+		return {"ok": false, "text": "这份私人订单需要与%s达到%d点关系，当前为%d。" % [str(npc_profile(npc_id).get("name", order.get("buyer", "委托人"))), relationship_required, int(relationships.get(npc_id, 0))]}
 	var qualifying: Array = []
 	for raw_catch in fish_catch_inventory:
-		if str(raw_catch.get("species_id", "")) == str(order["species_id"]):
-			qualifying.append(raw_catch)
+		if str(raw_catch.get("species_id", "")) != str(order["species_id"]):
+			continue
+		if not _fish_order_size_qualifies(str(raw_catch.get("size", "标准")), str(order.get("min_size", ""))):
+			continue
+		if not _fish_order_freshness_qualifies(fish_freshness_state(raw_catch), str(order.get("freshness_required", ""))):
+			continue
+		qualifying.append(raw_catch)
 	if qualifying.size() < int(order["quantity"]):
-		return {"ok": false, "text": "还需要%d条%s。" % [int(order["quantity"]), FishCatalog.species_name(str(order["species_id"]))]}
+		var conditions: Array[String] = []
+		if not str(order.get("min_size", "")).is_empty():
+			conditions.append("至少%s" % str(order["min_size"]))
+		if not str(order.get("freshness_required", "")).is_empty():
+			conditions.append("%s以上" % str(order["freshness_required"]))
+		return {"ok": false, "text": "需要%d条%s%s；当前合格%d条。" % [int(order["quantity"]), FishCatalog.species_name(str(order["species_id"])), "（%s）" % "、".join(conditions) if not conditions.is_empty() else "", qualifying.size()]}
 	qualifying.sort_custom(func(a, b): return int(a["caught_day"]) < int(b["caught_day"]))
 	var used := {}
 	for index in range(int(order["quantity"])):
@@ -2662,9 +3033,33 @@ func turn_in_fish_order(order_id: String) -> Dictionary:
 	cash += reward
 	order["completed"] = true
 	fish_market_orders[order_index] = order
+	if not npc_id.is_empty() and NPCS.has(npc_id):
+		known_npcs[npc_id] = true
+		add_npc_memory(npc_id, {
+			"memory_id": "fish_order_%s" % str(order["order_id"]),
+			"type": "fish_order",
+			"importance": 3 if int(order.get("relationship_reward", 0)) <= 2 else 4,
+			"summary": "你为%s完成了%s：%d条%s。" % [str(order["buyer"]), str(order.get("role", "鱼获订单")), int(order["quantity"]), FishCatalog.species_name(str(order["species_id"]))],
+			"relationship_delta": int(order.get("relationship_reward", 0)),
+			"effects": {"private_topic_access": 1, "dialogue_warmth": 1}
+		})
 	_record_wealth("鱼市订单 · %s" % str(order["buyer"]))
 	changed.emit()
-	return {"ok": true, "reward": reward, "text": "%s收下%d条%s，支付%d金贝。" % [str(order["buyer"]), int(order["quantity"]), FishCatalog.species_name(str(order["species_id"])), reward]}
+	return {"ok": true, "reward": reward, "relationship_delta": int(order.get("relationship_reward", 0)), "text": "%s收下%d条%s，支付%d金贝；这次交付已写入人物记忆。" % [str(order["buyer"]), int(order["quantity"]), FishCatalog.species_name(str(order["species_id"])), reward]}
+
+
+func _fish_order_size_qualifies(actual: String, minimum: String) -> bool:
+	if minimum.is_empty():
+		return true
+	var ranks := {"小型": 0, "标准": 1, "大型": 2, "纪录级": 3}
+	return int(ranks.get(actual, 0)) >= int(ranks.get(minimum, 0))
+
+
+func _fish_order_freshness_qualifies(actual: String, minimum: String) -> bool:
+	if minimum.is_empty():
+		return true
+	var ranks := {"鲜活": 0, "尚鲜": 1, "加工级": 2}
+	return int(ranks.get(actual, 2)) <= int(ranks.get(minimum, 2))
 
 
 func share_company_ids() -> Array[String]:

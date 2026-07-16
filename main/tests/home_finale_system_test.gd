@@ -111,10 +111,10 @@ func _test_save_and_migration() -> void:
 	state.finale_tide = 9
 	state.finale_summary = {"completed_day": 8, "completed_tide": 9, "home_name": "风灯庭院"}
 	var saved: Dictionary = state.build_save_data()
-	assert(int(saved.get("version", 0)) == 7, "居所与终局必须进入版本7存档。")
+	assert(int(saved.get("version", 0)) == state.SAVE_VERSION, "居所与终局必须进入当前版本存档。")
 	var restored = GameStateScript.new()
 	restored.recording_enabled = false
-	assert(bool(restored.restore_save_data(saved).get("ok", false)), "版本7居所与终局存档必须可读取。")
+	assert(bool(restored.restore_save_data(saved).get("ok", false)), "当前版本居所与终局存档必须可读取。")
 	assert(restored.home_level == 2 and restored.home_display_items.size() == 3 and restored.home_aquarium.size() == 1, "居所、陈列和水族必须完整往返。")
 	assert(restored.finale_completed and int(restored.finale_summary.get("completed_day", 0)) == 8, "终局完成状态与固定摘要必须完整往返。")
 
@@ -124,7 +124,7 @@ func _test_save_and_migration() -> void:
 		legacy["state"].erase(key)
 	var migrated = GameStateScript.new()
 	migrated.recording_enabled = false
-	assert(bool(migrated.restore_save_data(legacy).get("ok", false)), "版本6存档必须迁移到版本7。")
+	assert(bool(migrated.restore_save_data(legacy).get("ok", false)), "版本6存档必须迁移到当前版本。")
 	assert(migrated.home_level == 0 and migrated.home_display_items.is_empty() and migrated.home_aquarium.is_empty() and not migrated.finale_completed, "旧档迁移不能虚构居所收藏或终局经历。")
 
 

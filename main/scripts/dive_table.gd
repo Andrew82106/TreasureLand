@@ -39,7 +39,7 @@ func open(initial_mode: String = "prep") -> void:
 	visible = true
 	finishing = false
 	mode = "dive" if game.dive_active else initial_mode
-	if mode not in ["prep", "market", "catalog", "dive", "result", "sale_preview"]:
+	if mode not in ["prep", "market", "equipment", "catalog", "dive", "result", "sale_preview"]:
 		mode = "prep"
 	_rebuild()
 
@@ -115,6 +115,7 @@ func _rebuild() -> void:
 	column.add_child(_build_header())
 	match mode:
 		"market": column.add_child(_build_market())
+		"equipment": column.add_child(_build_equipment())
 		"catalog": column.add_child(_build_catalog())
 		"dive": column.add_child(_build_dive())
 		"result": column.add_child(_build_result())
@@ -131,6 +132,7 @@ func _build_header() -> PanelContainer:
 	panel.add_child(row)
 	var title := _label({
 		"prep": "海岸潜捕 · 下水准备", "market": "蓝鳍鱼铺 · 供需柜台",
+		"equipment": "潜捕工坊 · 长期装备",
 		"catalog": "海生图鉴", "dive": "海岸潜捕 · 水下",
 		"result": "海岸潜捕 · 上岸结算", "sale_preview": "蓝鳍鱼铺 · 出售确认"
 	}.get(mode, "海岸潜捕"), Color("f0d27e"), 25)
@@ -138,6 +140,7 @@ func _build_header() -> PanelContainer:
 	row.add_child(title)
 	row.add_child(_button("潜捕准备", _show_mode.bind("prep"), mode == "dive", 112))
 	row.add_child(_button("鱼铺行情", _show_mode.bind("market"), mode == "dive", 112))
+	row.add_child(_button("装备工坊", _show_mode.bind("equipment"), mode == "dive", 112))
 	row.add_child(_button("海生图鉴 %d/12" % game.marine_discoveries.size(), _show_mode.bind("catalog"), mode == "dive", 142))
 	row.add_child(_button("上浮" if mode == "dive" else "返回岛上", _finish_dive.bind(false) if mode == "dive" else request_close, false, 112))
 	return panel
@@ -167,8 +170,9 @@ func _build_prep() -> Control:
 	info.add_child(_label("今日海况", Color("f0d27e"), 21))
 	info.add_child(_label("%s · %s · %s\n有效鱼群窗口 %d / %d" % [game.phase_name(), game.weather, game.wind_direction, game.fishing_remaining_today(), game.DAILY_FISHING_LIMIT], Color("c7dcda"), 17))
 	info.add_child(HSeparator.new())
-	info.add_child(_label("基础装备", Color("f0d27e"), 19))
-	info.add_child(_label("氧气 %.0f秒\n鱼篓 %d格\n游动效率 ×%.2f" % [float(game.dive_equipment["oxygen"]), int(game.dive_equipment["basket"]), float(game.dive_equipment["swim_speed"])], Color("b7d5d1"), 16))
+	info.add_child(_label("当前装备", Color("f0d27e"), 19))
+	info.add_child(_label("氧气 %.0f秒\n鱼篓 %d格\n游动效率 ×%.2f\n保鲜延后 %d日" % [float(game.dive_equipment["oxygen"]), int(game.dive_equipment["basket"]), float(game.dive_equipment["swim_speed"]), int(game.dive_equipment["preservation_days"])], Color("b7d5d1"), 16))
+	info.add_child(_button("查看与升级装备", _show_mode.bind("equipment"), false, 0))
 	info.add_child(HSeparator.new())
 	var market_rows: Array = game.fish_market_rows()
 	info.add_child(_label("当前高价鱼", Color("f0d27e"), 19))
@@ -371,6 +375,70 @@ func _build_market() -> Control:
 	return body
 
 
+func _build_equipment() -> Control:
+	var panel := PanelContainer.new()
+	panel.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	panel.add_theme_stylebox_override("panel", _panel_style(Color("102d36"), Color("6b9292"), 10))
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	panel.add_child(box)
+	box.add_child(_label("长期装备不会损坏，也不会增加每日3个有效鱼群窗口；它只改善单次潜捕的时间、移动、携带与保存选择。", Color("c7dcda"), 16))
+	box.add_child(_label("当前持有 %d金贝。第二次升级会读取已永久发现的万物知识，但不会消耗万物。" % game.cash, Color("f0d27e"), 17))
+	if not feedback_text.is_empty():
+		box.add_child(_label(feedback_text, Color("f0c77b"), 15))
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	box.add_child(scroll)
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 10)
+	scroll.add_child(grid)
+	for raw_row in game.dive_equipment_rows():
+		grid.add_child(_equipment_card(raw_row))
+	return panel
+
+
+func _equipment_card(raw_row: Dictionary) -> PanelContainer:
+	var row: Dictionary = raw_row
+	var card := PanelContainer.new()
+	card.custom_minimum_size = Vector2(0, 215)
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	card.add_theme_stylebox_override("panel", _panel_style(Color("153640"), Color("d0b967") if not bool(row["maxed"]) else Color("638581"), 8))
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 7)
+	card.add_child(box)
+	box.add_child(_label("%s · %d/%d级" % [str(row["name"]), int(row["level"]), int(row["max_level"])], Color("f0d27e"), 20))
+	box.add_child(_label("%s\n当前：%s · %s" % [str(row["description"]), str(row["current_name"]), _equipment_value_text(row, false)], Color("bfd5d1"), 15))
+	if bool(row["maxed"]):
+		box.add_child(_label("已完成全部升级。", Color("8edcaf"), 16))
+		return card
+	var requirement := "无知识门槛"
+	if not str(row["requirement_id"]).is_empty():
+		requirement = "需要发现%s%s" % [str(row["requirement_name"]), " · 已满足" if bool(row["requirement_met"]) else " · 未满足"]
+	box.add_child(_label("下一阶：%s · %s\n%s" % [str(row["next_name"]), _equipment_value_text(row, true), requirement], Color("9edfc4") if bool(row["requirement_met"]) else Color("d49b91"), 15))
+	var buy := _button("支付%d金贝升级" % int(row["cost"]), _buy_equipment.bind(str(row["slot_id"])), not bool(row["requirement_met"]) or not bool(row["affordable"]), 0)
+	box.add_child(buy)
+	return card
+
+
+func _equipment_value_text(row: Dictionary, next_value: bool) -> String:
+	var value = row["next_value"] if next_value else row["current_value"]
+	if str(row["slot_id"]) == "fins":
+		return "游动×%.2f" % float(value)
+	if str(row["slot_id"]) == "oxygen":
+		return "%.0f秒" % float(value)
+	return "%d%s" % [int(value), str(row["unit"])]
+
+
+func _buy_equipment(slot_id: String) -> void:
+	var result: Dictionary = game.buy_dive_equipment_upgrade(slot_id)
+	feedback_text = str(result.get("text", "装备升级未完成。"))
+	mode = "equipment"
+	_rebuild()
+
+
 func _market_row(row: Dictionary) -> PanelContainer:
 	var panel := PanelContainer.new()
 	panel.add_theme_stylebox_override("panel", _panel_style(Color("14363d"), Color("456e70"), 6))
@@ -384,14 +452,34 @@ func _market_row(row: Dictionary) -> PanelContainer:
 
 func _order_row(raw_order: Dictionary) -> Control:
 	var order: Dictionary = raw_order
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel", _panel_style(Color("183740"), Color("587b7b"), 6))
 	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	panel.add_child(row)
 	var species_name := FishCatalog.species_name(str(order["species_id"]))
 	var completed := bool(order.get("completed", false))
-	var label := _label("%s：%s ×%d · 每条%d金贝 · 截止%d潮刻%s" % [str(order["buyer"]), species_name, int(order["quantity"]), int(order["reward_each"]), int(order["deadline_tide"]), " · 已交付" if completed else ""], Color("89aaa7") if completed else Color("d1e1dd"), 14)
+	var requirements: Array[String] = []
+	if not str(order.get("min_size", "")).is_empty():
+		requirements.append("至少%s" % str(order["min_size"]))
+	if not str(order.get("freshness_required", "")).is_empty():
+		requirements.append("%s以上" % str(order["freshness_required"]))
+	if requirements.is_empty():
+		requirements.append("尺寸与新鲜度不限")
+	var npc_id := str(order.get("npc_id", ""))
+	var relationship_required := int(order.get("relationship_required", 0))
+	var relationship_value := int(game.relationships.get(npc_id, 0))
+	var relationship_met := relationship_value >= relationship_required
+	var label := _label("%s · %s\n%s：%s ×%d · %s · 每条%d金贝 · 截止%d潮刻%s" % [
+		str(order.get("role", "人物订单")), str(order.get("brief", "定向收购")),
+		str(order["buyer"]), species_name, int(order["quantity"]), "、".join(requirements),
+		int(order["reward_each"]), int(order["deadline_tide"]), " · 已交付" if completed else ""
+	], Color("89aaa7") if completed else Color("d1e1dd"), 14)
 	label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(label)
-	row.add_child(_button("交付", _turn_in_order.bind(str(order["order_id"])), completed, 72))
-	return row
+	var button_text := "已交付" if completed else ("关系%d/%d" % [relationship_value, relationship_required] if not relationship_met else "交付")
+	row.add_child(_button(button_text, _turn_in_order.bind(str(order["order_id"])), completed or not relationship_met, 94))
+	return panel
 
 
 func _build_sale_preview() -> Control:

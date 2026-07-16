@@ -936,6 +936,9 @@ func _open_wealth() -> void:
 	modal_body.add_child(stats)
 
 	modal_body.add_child(_make_text("净资产 = 当前金贝 + 活动中/待撮合金贝 + 鱼获保守变现值 + 份契保守变现值。永久万物、知识和凭证不折算现金。", Color("a9c9ca")))
+	var today_report: Dictionary = game.current_day_economy_summary()
+	modal_body.add_child(_make_text("今日分类账", Color("f0d27e")))
+	modal_body.add_child(_make_text(_economy_report_text(today_report, true), Color("c7dcda")))
 	modal_body.add_child(_make_button("查看潮汐商会份契", _open_share_market))
 	modal_body.add_child(_make_button("把财富用于居所与收藏", _open_home))
 	var chart = WealthChartScript.new()
@@ -954,6 +957,15 @@ func _open_wealth() -> void:
 		progress.add_theme_stylebox_override("background", _progress_style(Color("173039"), Color("526f73")))
 		progress.add_theme_stylebox_override("fill", _progress_style(Color("4fa982"), Color("7ed5aa")))
 		modal_body.add_child(progress)
+	var activity_totals: Array = game.economy_activity_totals()
+	if not activity_totals.is_empty():
+		modal_body.add_child(_make_text("各玩法累计收支", Color("f0d27e")))
+		for index in range(mini(8, activity_totals.size())):
+			var activity: Dictionary = activity_totals[index]
+			modal_body.add_child(_make_text("%s · 流入%d / 流出%d · 净资产%s%d" % [
+				str(activity["name"]), int(activity["cash_in"]), int(activity["cash_out"]),
+				"+" if int(activity["net_delta"]) >= 0 else "", int(activity["net_delta"])
+			], Color("9edfc4") if int(activity["net_delta"]) >= 0 else Color("d9a09a")))
 
 	modal_body.add_child(_make_text("最近变化", Color("f0d27e")))
 	var first_recent := maxi(0, history.size() - 6)
@@ -1499,6 +1511,11 @@ func _open_bed() -> void:
 		int(home["aquarium_count"]), int(home["aquarium_slots"]), int(home["visits"])
 	], Color("9edbb6")))
 	modal_body.add_child(_make_text("睡眠结算顺序：三家商会经营与分红 → 次日天气/鱼市/赛事 → 新报价 → %d笔隔夜订单撮合。" % game.share_pending_orders.size(), Color("d9c47f")))
+	modal_body.add_child(_make_text(_economy_report_text(game.current_day_economy_summary(), false), Color("bcd5d2")))
+	var relief: Dictionary = game.relief_work_status()
+	modal_body.add_child(_make_text("低谷恢复：%s" % str(relief.get("reason", "")), Color("8edcaf") if bool(relief.get("available", false)) else Color("9ab5b3")))
+	if bool(relief.get("available", false)):
+		modal_body.add_child(_make_button("完成巡岸修缮 · 1潮刻 / +40金贝", _perform_relief_work))
 	var save_row := HBoxContainer.new()
 	save_row.add_theme_constant_override("separation", 8)
 	var save_button := _make_button("保存当前进度", _manual_save, not game.can_save_game())
@@ -1529,13 +1546,45 @@ func _sleep() -> void:
 	for raw_trade in game.share_trade_history:
 		if raw_trade is Dictionary and int(raw_trade.get("day", 0)) == game.day and str(raw_trade.get("source", "")) == "次日开盘撮合":
 			executed_orders += 1
+	var day_report: Dictionary = game.latest_day_end_report()
 	_show_result(
 		"新的一天",
-		"第%d天清晨。今日天气：%s，风向：%s。\n商会分红%d金贝；开盘撮合%d笔。%s。\n%s" % [
+		"%s\n\n第%d天清晨。今日天气：%s，风向：%s。\n商会分红%d金贝；开盘撮合%d笔。%s。\n%s" % [
+			_economy_report_text(day_report, true),
 			game.day, game.weather, game.wind_direction, dividend_total, executed_orders, "；".join(quote_lines),
 			"日终自动存档已创建。" if bool(autosave.get("ok", false)) else str(autosave.get("text", "自动存档未完成。"))
 		]
 	)
+
+
+func _perform_relief_work() -> void:
+	var result: Dictionary = game.perform_relief_work()
+	_show_result("巡岸修缮", str(result.get("text", "修缮工作未完成。")), _open_bed)
+
+
+func _economy_report_text(report: Dictionary, include_categories: bool) -> String:
+	if report.is_empty():
+		return "今天还没有可汇总的经济记录。"
+	var opening: Dictionary = report.get("opening", {})
+	var closing: Dictionary = report.get("closing", {})
+	var lines: Array[String] = []
+	lines.append("第%d日账簿：期初%d + 流入%d − 流出%d = 期末%d金贝%s" % [
+		int(report.get("day", game.day)), int(opening.get("cash", 0)), int(report.get("cash_in", 0)),
+		int(report.get("cash_out", 0)), int(closing.get("cash", game.cash)),
+		" · 已核对" if bool(report.get("cash_balanced", false)) else " · 账目待核对"
+	])
+	lines.append("账户财富%s%d · 净资产%s%d · %d笔经济事件" % [
+		"+" if int(report.get("account_delta", 0)) >= 0 else "", int(report.get("account_delta", 0)),
+		"+" if int(report.get("net_delta", 0)) >= 0 else "", int(report.get("net_delta", 0)), int(report.get("event_count", 0))
+	])
+	if include_categories:
+		for raw_row in report.get("categories", []):
+			var row: Dictionary = raw_row
+			lines.append("• %s：流入%d / 流出%d · 净资产%s%d" % [
+				str(row.get("name", "其他变化")), int(row.get("cash_in", 0)), int(row.get("cash_out", 0)),
+				"+" if int(row.get("net_delta", 0)) >= 0 else "", int(row.get("net_delta", 0))
+			])
+	return "\n".join(lines)
 
 
 func _open_granny() -> void:
