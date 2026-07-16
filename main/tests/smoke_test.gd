@@ -225,6 +225,7 @@ func _test_poker_betting_state_machine() -> void:
 	var capped = GameStateScript.new()
 	capped.recording_enabled = false
 	capped.poker_test_passive_ai = true
+	capped.poker_completed = true
 	var tide_before: int = int(capped.tide)
 	capped.begin_poker_session(80)
 	capped.poker_session_hands = 7

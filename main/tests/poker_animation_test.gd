@@ -11,6 +11,7 @@ func _init() -> void:
 func _run() -> void:
 	var state = GameStateScript.new()
 	state.recording_enabled = false
+	state.poker_completed = true
 	state.rng.seed = 20260715
 	state.start_poker_hand()
 	var table = PokerTableScript.new()

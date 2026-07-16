@@ -1091,6 +1091,13 @@ func _open_time_menu() -> void:
 		race_lines.append("%s 第%d潮刻 · %s" % [str(event["name"]), int(event["scheduled_tide"]), str(event["status"])])
 	modal_body.add_child(_make_text("今日逐风赛事\n• %s" % "\n• ".join(race_lines), Color("e8cb82")))
 	modal_body.add_child(_make_button("查看赛事票池", _open_race))
+	var invitation_lines: Array[String] = []
+	for raw_invitation in game.poker_invitation_rows():
+		var invitation: Dictionary = raw_invitation
+		invitation_lines.append("%s · %s · %s" % [str(invitation["host_name"]), str(invitation["title"]), str(invitation["status"])])
+	if not invitation_lines.is_empty():
+		modal_body.add_child(_make_text("今日牌会邀请\n• %s" % "\n• ".join(invitation_lines), Color("d7b6e8")))
+		modal_body.add_child(_make_button("查看牌会场次", _open_poker))
 	var speed_row := HBoxContainer.new()
 	speed_row.add_theme_constant_override("separation", 8)
 	for mode in ["紧凑", "标准", "悠闲"]:
@@ -1327,6 +1334,20 @@ func _open_npc(npc_id: String, notice_text: String = "") -> void:
 	actions.add_child(_make_button("深入交谈 · 0.5—1潮刻", _npc_deep_action.bind(npc_id), not deep_available))
 	actions.add_child(_make_button("在地图上查看", _open_map))
 	_add_npc_service_buttons(npc_id, actions)
+	var invitations: Array = game.poker_invitation_rows(npc_id)
+	if not invitations.is_empty():
+		modal_body.add_child(_make_text("牌会邀请", Color("f1d687")))
+		for raw_invitation in invitations:
+			var invitation: Dictionary = raw_invitation
+			var invitation_panel := PanelContainer.new()
+			invitation_panel.add_theme_stylebox_override("panel", _panel_style(Color("17343b"), Color("b99e63") if bool(invitation["available"]) else Color("4e6265")))
+			var invitation_row := HBoxContainer.new()
+			invitation_panel.add_child(invitation_row)
+			var invitation_copy := _make_text("%s\n%s · %s" % [str(invitation["title"]), str(invitation["description"]), str(invitation["status"])], Color("d6e6e2"))
+			invitation_copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			invitation_row.add_child(invitation_copy)
+			invitation_row.add_child(_make_button("接受邀请", _accept_poker_invitation.bind(str(invitation["id"])), not bool(invitation["available"])))
+			modal_body.add_child(invitation_panel)
 
 
 func _npc_portrait(npc_id: String) -> Control:
@@ -1547,6 +1568,12 @@ func _open_news() -> void:
 				"" if bool(entry.get("available", false)) else "（当前不可交谈）"
 			], Color("bcd5d2")))
 		modal_body.add_child(HSeparator.new())
+	var poker_summary: Dictionary = game.latest_poker_session_summary()
+	if not poker_summary.is_empty():
+		modal_body.add_child(_make_text("椰影茶摊 · 牌会传闻", Color("e8c98a")))
+		modal_body.add_child(_make_text(game.poker_rumor_summary(), Color("bcd5d2")))
+		modal_body.add_child(_make_button("查看牌会场次与邀请", _open_poker))
+		modal_body.add_child(HSeparator.new())
 	var race_news: Dictionary = game.race_news_summary()
 	modal_body.add_child(_make_text("逐风竞速 · 今日赛场", Color("f0d27e")))
 	modal_body.add_child(_make_text(str(race_news.get("headline", "今日赛事等待公开消息。")), Color("c7dcda")))
@@ -1597,9 +1624,44 @@ func _open_tower() -> void:
 
 
 func _open_poker(message: String = "") -> void:
-	_open_modal("命运牌会 · 选择桌级")
-	modal_body.add_child(_make_text("桌级提高会同步提高本局上限、基础投入和NPC带来的钱包。高桌不是单纯放大按钮，而是让财富跃升与输光风险同时变得明显。", Color("d5e8e4")))
+	_open_modal("命运牌会 · 场次与桌级")
+	modal_body.add_child(_make_text("短牌会最多8手并在离桌时统一推进2潮刻；完整牌会最多16手并推进4潮刻。桌内思考、规则查询和演出不额外走时。桌级提高会同步提高本局上限、基础投入和NPC带来的钱包。", Color("d5e8e4")))
 	modal_body.add_child(_make_text("当前持有%d金贝 · 财富头衔：%s" % [game.cash, game.wealth_title()], Color("f0d27e")))
+	var latest_summary: Dictionary = game.latest_poker_session_summary()
+	if not latest_summary.is_empty():
+		modal_body.add_child(_make_text("最近牌会：%s" % game.poker_rumor_summary(), Color("9edbb6")))
+	if not game.poker_completed:
+		var tutorial: Dictionary = game.poker_invitation_rows()[0]
+		var tutorial_panel := PanelContainer.new()
+		tutorial_panel.add_theme_stylebox_override("panel", _panel_style(Color("17343b"), Color("d0b765")))
+		var tutorial_box := VBoxContainer.new()
+		tutorial_panel.add_child(tutorial_box)
+		tutorial_box.add_child(_make_text("首次入席 · 六手命象教学", Color("f2d984")))
+		tutorial_box.add_child(_make_text("独立100金贝额度，亏损不动原有钱包；只有超过100的净盈利会带回。六手依次覆盖：命牌与天象、回响、升势/轮转、既济/双镜、下注信息、离桌结算。", Color("c5d9d5")))
+		tutorial_box.add_child(_make_text(_poker_time_warning(2), Color("e7bd7d")))
+		tutorial_box.add_child(_make_button("接受榕奶奶教学 · 6手 / 2潮刻", _accept_poker_invitation.bind(str(tutorial["id"]))))
+		modal_body.add_child(tutorial_panel)
+		return
+
+	modal_body.add_child(_make_text("今日人物牌会邀请", Color("f1d687")))
+	for raw_invitation in game.poker_invitation_rows():
+		var invitation: Dictionary = raw_invitation
+		var invite_panel := PanelContainer.new()
+		invite_panel.add_theme_stylebox_override("panel", _panel_style(Color("17343b"), Color("b99e63") if bool(invitation["available"]) else Color("4e6265")))
+		var invite_row := HBoxContainer.new()
+		invite_panel.add_child(invite_row)
+		var invite_copy := VBoxContainer.new()
+		invite_copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		invite_copy.add_child(_make_text("%s · %s" % [str(invitation["host_name"]), str(invitation["title"])], Color("f1d687") if bool(invitation["available"]) else Color("9babad")))
+		invite_copy.add_child(_make_text("%s\n%s · %s · 上限%d金贝" % [
+			str(invitation["description"]), str(invitation["phase"]),
+			str(game.poker_session_mode_info(str(invitation["mode"]))["name"]), int(invitation["buy_in"])
+		], Color("b9cfcd")))
+		invite_row.add_child(invite_copy)
+		invite_row.add_child(_make_button(str(invitation["status"]), _accept_poker_invitation.bind(str(invitation["id"])), not bool(invitation["available"])))
+		modal_body.add_child(invite_panel)
+
+	modal_body.add_child(_make_text("公共牌桌", Color("f1d687")))
 	for raw_tier in game.poker_tiers():
 		var tier: Dictionary = raw_tier
 		var buy_in := int(tier["buy_in"])
@@ -1614,14 +1676,40 @@ func _open_poker(message: String = "") -> void:
 		copy.add_child(_make_text("%s · 上限%d金贝 · 基础投入%d/%d" % [str(tier["name"]), buy_in, int(tier["small_blind"]), int(tier["big_blind"])], Color("f2d984") if available else Color("91a1a3")))
 		copy.add_child(_make_text("%s%s" % [str(tier["description"]), " · 需财富%d" % requirement if requirement > 0 else ""], Color("b9cfcd")))
 		row.add_child(copy)
-		row.add_child(_make_button("入席" if available else "尚未开放", _enter_poker_tier.bind(buy_in, message), not available))
+		var actions := VBoxContainer.new()
+		actions.add_theme_constant_override("separation", 6)
+		actions.add_child(_make_button("短牌会 · 8手 / 2潮刻" if available else "尚未开放", _enter_poker_tier.bind(buy_in, "short", "", message), not available))
+		actions.add_child(_make_button("完整牌会 · 16手 / 4潮刻" if available else "尚未开放", _enter_poker_tier.bind(buy_in, "full", "", message), not available))
+		row.add_child(actions)
 		modal_body.add_child(panel)
 
 
-func _enter_poker_tier(buy_in: int, message: String = "") -> void:
+func _poker_time_warning(time_cost: int) -> String:
+	var current_value := float(game.tide - 1) + float(game.tide_progress)
+	var end_value := current_value + float(time_cost)
+	var crosses_phase := int(floor(current_value / 4.0)) != int(floor(minf(15.999, end_value) / 4.0))
+	var end_text := "并进入日终停驻" if end_value >= 16.0 else ("，将跨过时段边界并刷新NPC日程、鱼价与赛事" if crosses_phase else "")
+	return "离桌统一推进%d潮刻%s。" % [time_cost, end_text]
+
+
+func _accept_poker_invitation(invitation_id: String) -> void:
+	var selected: Dictionary = {}
+	for raw_invitation in game.poker_invitation_rows():
+		var invitation: Dictionary = raw_invitation
+		if str(invitation["id"]) == invitation_id:
+			selected = invitation
+			break
+	if selected.is_empty() or not bool(selected.get("available", false)):
+		_show_result("邀请尚未开放", str(selected.get("status", "这份邀请当前不可接受。")), _open_poker)
+		return
+	_enter_poker_tier(int(selected["buy_in"]), str(selected["mode"]), invitation_id, "受%s邀请 · %s" % [str(selected["host_name"]), str(selected["title"])])
+
+
+func _enter_poker_tier(buy_in: int, mode: String = "short", invitation_id: String = "", message: String = "") -> void:
+	game.save_game("user://saves/activity_poker.json", _world_save_state(), true)
 	modal_overlay.visible = false
-	game.begin_poker_session(buy_in)
-	poker_table.open(message)
+	game.begin_poker_session(buy_in, mode, invitation_id)
+	poker_table.open("%s%s" % [message, ("\n%s" % _poker_time_warning(game.poker_session_time_cost())) if not message.is_empty() else _poker_time_warning(game.poker_session_time_cost())])
 	player.controls_enabled = false
 
 

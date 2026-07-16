@@ -80,13 +80,26 @@ const TIME_STATE_UI := "ui_paused"
 const TIME_STATE_ACTIVITY := "activity_snapshot"
 const TIME_STATE_FAST_FORWARD := "fast_forward"
 const TIME_STATE_DAY_END := "day_end_hold"
-const SAVE_VERSION := 4
+const SAVE_VERSION := 5
 const MANUAL_SAVE_PATH := "user://saves/manual_save.json"
 const POKER_TIERS := [
 	{"name": "潮边小桌", "buy_in": 80, "wealth_required": 0, "small_blind": 1, "big_blind": 2, "description": "认识规则与人物，输赢幅度较小"},
 	{"name": "椰影常桌", "buy_in": 200, "wealth_required": 500, "small_blind": 2, "big_blind": 4, "description": "学徒开放，开始形成可感知的财富波动"},
 	{"name": "风灯高桌", "buy_in": 500, "wealth_required": 3000, "small_blind": 5, "big_blind": 10, "description": "小赢家开放，对手资金与行动压力同步提高"},
 	{"name": "塔影名流桌", "buy_in": 2000, "wealth_required": 20000, "small_blind": 20, "big_blind": 40, "description": "富商开放，用于中期的大额财富跃升"}
+]
+const POKER_SESSION_MODES := {
+	"tutorial": {"name": "六手教学牌会", "max_hands": 6, "time_cost": 2, "hand_limit": 15, "description": "使用独立100金贝额度，每手上限15金贝，逐手覆盖命牌、命象、下注与离桌。"},
+	"short": {"name": "短牌会", "max_hands": 8, "time_cost": 2, "description": "最多8手，适合一次清楚的短时财富与人物交锋。"},
+	"full": {"name": "完整牌会", "max_hands": 16, "time_cost": 4, "description": "最多16手，让钱包、位置轮换和对手习惯形成更长的牌桌故事。"}
+}
+const POKER_TUTORIAL_LESSONS := [
+	{"title": "命牌与天象", "objective": "两张命牌必须使用，再从公开天象中选择两张。", "hint": "初兆公开后，右栏会标出你当前采用的两张天象。"},
+	{"title": "认识回响", "objective": "完全相同要求类别与势阶都相同；同势阶水火不是回响。", "hint": "本手命牌固定包含一组完全相同的水牌，观察它怎样进入命象。"},
+	{"title": "升势与轮转", "objective": "连续四阶形成升势；沿势阶水火严格交替时提升为轮转。", "hint": "本手初兆会让你的命牌直接展示一次水火交替序列。"},
+	{"title": "既济与双镜", "objective": "既济比较两水两火的势阶平衡；双镜比较两个水火同阶镜像。", "hint": "本手初兆会形成既济；规则页保留双镜对照示例。"},
+	{"title": "下注所表达的信息", "objective": "公开天象只表示可能性；下注尺度可以代表真牌，也可以施压。", "hint": "本手公共天象很有威胁，但你的两张命牌仍限制真实命象。"},
+	{"title": "离桌与结算", "objective": "辨认投入、返还、服务费、当前额度和固定2潮刻结算。", "hint": "教学局免服务费；结束后只把超过100的净盈利带回钱包。"}
 ]
 
 const ORACLE_WATER_NAMES := ["水滴", "雨幕", "溪流", "湖泊", "江河", "海洋"]
@@ -183,6 +196,12 @@ var poker_session_active: bool = false
 var poker_session_id: String = ""
 var poker_session_hands: int = 0
 var poker_session_buy_in: int = 80
+var poker_session_mode: String = "short"
+var poker_session_invitation_id: String = ""
+var poker_session_sequence: int = 0
+var poker_session_stats := {}
+var poker_session_history: Array = []
+var poker_invitations: Array = []
 var poker_dealer_index: int = -1
 var poker_dealer_seat: int = -1
 var poker_session_end_reason: String = ""
@@ -210,6 +229,7 @@ func _init() -> void:
 	_sync_tower_milestones(false)
 	_generate_daily_schedule()
 	_initialize_race_day()
+	_initialize_poker_invitations()
 	_initialize_fish_market()
 	_load_recent_oracle_records()
 	_record_wealth("来到万物之岛", true)
@@ -286,6 +306,9 @@ func build_save_data(world_state: Dictionary = {}) -> Dictionary:
 			"last_dive_result": last_dive_result.duplicate(true),
 			"poker_completed": poker_completed,
 			"normal_poker_completed": normal_poker_completed,
+			"poker_session_sequence": poker_session_sequence,
+			"poker_session_history": poker_session_history.duplicate(true),
+			"poker_invitations": poker_invitations.duplicate(true),
 			"aqiu_request_active": aqiu_request_active,
 			"aqiu_request_done": aqiu_request_done,
 			"ultimate_created": ultimate_created,
@@ -438,6 +461,9 @@ func restore_save_data(data: Dictionary) -> Dictionary:
 	last_dive_result = saved.get("last_dive_result", {}).duplicate(true)
 	poker_completed = bool(saved.get("poker_completed", false))
 	normal_poker_completed = bool(saved.get("normal_poker_completed", false))
+	poker_session_sequence = maxi(0, int(saved.get("poker_session_sequence", 0)))
+	poker_session_history = saved.get("poker_session_history", []).duplicate(true)
+	poker_invitations = saved.get("poker_invitations", []).duplicate(true)
 	if not saved.has("normal_poker_completed"):
 		for raw_record in recent_oracle_records:
 			if raw_record is Dictionary and not bool(raw_record.get("tutorial", false)):
@@ -460,12 +486,24 @@ func restore_save_data(data: Dictionary) -> Dictionary:
 		_record_wealth("读取旧存档", true)
 	poker.clear()
 	poker_session_active = false
+	poker_session_id = ""
+	poker_session_hands = 0
+	poker_session_buy_in = 80
+	poker_session_mode = "short"
+	poker_session_invitation_id = ""
+	poker_session_stats.clear()
+	poker_session_tutorial = false
+	poker_tutorial_balance = 0
+	poker_tutorial_settled = false
 	poker_session_time_charged = false
+	poker_session_seed = 0
 	time_pause_reasons.clear()
 	if daily_schedule.is_empty():
 		_generate_daily_schedule()
 	if race_events.is_empty() or int(race_events[0].get("day", 0)) != day:
 		_initialize_race_day()
+	if poker_invitations.is_empty() or int(poker_invitations[0].get("day", 0)) != day:
+		_initialize_poker_invitations()
 	if fish_market_quotes.is_empty():
 		_initialize_fish_market()
 	time_state = TIME_STATE_DAY_END if day_end_pending else TIME_STATE_WORLD
@@ -483,7 +521,7 @@ func _validate_save_data(data: Dictionary) -> Dictionary:
 	for key in ["daily_schedule", "discovered", "discovery_records", "tower_milestones", "attempted_pairs", "relationships", "memories", "known_npcs", "npc_topic_reads", "npc_request_states", "npc_shared_creations", "npc_shared_fish", "npc_deep_talk_days", "npc_talk_counts", "npc_memory_rewarded", "dive_state", "marine_discoveries", "marine_size_records", "fish_market_quotes", "fish_market_stock", "fish_market_demand", "fish_market_reasons", "processed_fish_sales", "dive_equipment", "last_dive_result"]:
 		if saved.has(key) and not saved[key] is Dictionary:
 			return {"ok": false, "text": "存档字段%s损坏，未修改当前进度。" % key}
-	for key in ["time_event_log", "recent_synthesis_pairs", "wealth_history", "poker_npc_wallets", "poker_npc_brought", "poker_npc_present", "race_events", "race_history", "fish_catch_inventory", "fish_market_orders", "fish_market_history", "fish_market_transactions"]:
+	for key in ["time_event_log", "recent_synthesis_pairs", "wealth_history", "poker_npc_wallets", "poker_npc_brought", "poker_npc_present", "poker_session_history", "poker_invitations", "race_events", "race_history", "fish_catch_inventory", "fish_market_orders", "fish_market_history", "fish_market_transactions"]:
 		if saved.has(key) and not saved[key] is Array:
 			return {"ok": false, "text": "存档字段%s损坏，未修改当前进度。" % key}
 	return {"ok": true}
@@ -617,7 +655,7 @@ func poker_tier_for_buy_in(buy_in: int) -> Dictionary:
 func can_enter_poker_tier(buy_in: int) -> bool:
 	var tier := poker_tier_for_buy_in(buy_in)
 	if poker_session_active and poker_session_tutorial:
-		return poker_player_available() >= buy_in and account_wealth() >= int(tier["wealth_required"])
+		return poker_player_available() >= int(POKER_SESSION_MODES["tutorial"]["hand_limit"]) and account_wealth() >= int(tier["wealth_required"])
 	if not poker_completed and buy_in == 80:
 		return account_wealth() >= int(tier["wealth_required"])
 	return cash >= buy_in and account_wealth() >= int(tier["wealth_required"])
@@ -779,6 +817,7 @@ func refresh_day() -> void:
 	wind_direction = winds[day_rng.randi_range(0, winds.size() - 1)]
 	_generate_daily_schedule()
 	_initialize_race_day()
+	_initialize_poker_invitations()
 	_initialize_fish_market()
 	changed.emit()
 
@@ -3303,25 +3342,186 @@ func run_race(
 	}
 
 
-func begin_poker_session(buy_in: int = 80) -> void:
+func _initialize_poker_invitations() -> void:
+	poker_invitations.clear()
+	if not poker_completed:
+		poker_invitations.append({
+			"id": "tutorial-d%03d" % day,
+			"day": day,
+			"host_id": "granny",
+			"host_name": "榕奶奶",
+			"title": "六手命象入门",
+			"mode": "tutorial",
+			"buy_in": 80,
+			"phase": "任意",
+			"wealth_required": 0,
+			"requires_normal": false,
+			"description": "独立100金贝教学额度，不影响原有钱包。"
+		})
+		return
+	poker_invitations.append({
+		"id": "oldjoe-short-d%03d" % day,
+		"day": day,
+		"host_id": "old_joe",
+		"host_name": "老乔",
+		"title": "暮潮稳手局",
+		"mode": "short",
+		"buy_in": 80,
+		"phase": "傍晚",
+		"wealth_required": 0,
+		"requires_normal": false,
+		"description": "老乔邀你在暮潮时打一场短牌会，看看你是否懂得及时收手。"
+	})
+	poker_invitations.append({
+		"id": "milo-full-d%03d" % day,
+		"day": day,
+		"host_id": "milo",
+		"host_name": "米洛",
+		"title": "夜灯完整牌会",
+		"mode": "full",
+		"buy_in": 200,
+		"phase": "夜晚",
+		"wealth_required": 500,
+		"requires_normal": true,
+		"description": "最多16手的完整牌会，让人物钱包和长期判断真正展开。"
+	})
+	poker_invitations.append({
+		"id": "mia-report-d%03d" % day,
+		"day": day,
+		"host_id": "mia",
+		"host_name": "米娅",
+		"title": "晨报记者观察席",
+		"mode": "full",
+		"buy_in": 500,
+		"phase": "白天",
+		"wealth_required": 3000,
+		"requires_normal": true,
+		"description": "米娅会把大额底池、及时退契和全部投入写入可追溯的牌桌报道。"
+	})
+
+
+func poker_invitation_rows(npc_id: String = "") -> Array:
+	var result: Array = []
+	for raw_invitation in poker_invitations:
+		var invitation: Dictionary = raw_invitation
+		if not npc_id.is_empty() and str(invitation["host_id"]) != npc_id:
+			continue
+		var invitation_id := str(invitation.get("id", ""))
+		var completed_today := _poker_invitation_completed(invitation_id)
+		var requirement_ok := (not bool(invitation.get("requires_normal", false)) or normal_poker_completed) \
+			and account_wealth() >= int(invitation.get("wealth_required", 0))
+		var phase_ok := str(invitation.get("phase", "任意")) in ["任意", phase_name()]
+		var mode := str(invitation.get("mode", "short"))
+		var cash_ok := mode == "tutorial" or can_enter_poker_tier(int(invitation.get("buy_in", 80)))
+		var row := invitation.duplicate(true)
+		row["available"] = not completed_today and requirement_ok and phase_ok and cash_ok
+		row["completed_today"] = completed_today
+		row["requirement_ok"] = requirement_ok
+		row["phase_ok"] = phase_ok
+		row["cash_ok"] = cash_ok
+		row["status"] = (
+			"当前可接受" if bool(row["available"]) else
+			("今日已完成" if completed_today else
+			("需完成一次正常牌会" if bool(invitation.get("requires_normal", false)) and not normal_poker_completed else
+			("需账户财富%d金贝" % int(invitation.get("wealth_required", 0)) if account_wealth() < int(invitation.get("wealth_required", 0)) else
+			("%s开放" % str(invitation.get("phase", "指定时段")) if not phase_ok else "当前金贝不足"))))
+		)
+		result.append(row)
+	return result
+
+
+func _poker_invitation_completed(invitation_id: String) -> bool:
+	if invitation_id.is_empty():
+		return false
+	for raw_summary in poker_session_history:
+		if not raw_summary is Dictionary:
+			continue
+		var summary: Dictionary = raw_summary
+		if str(summary.get("invitation_id", "")) == invitation_id and bool(summary.get("completed_mode", false)):
+			return true
+	return false
+
+
+func poker_invitation(invitation_id: String) -> Dictionary:
+	for raw_invitation in poker_invitations:
+		var invitation: Dictionary = raw_invitation
+		if str(invitation.get("id", "")) == invitation_id:
+			return invitation.duplicate(true)
+	return {}
+
+
+func poker_session_mode_info(mode: String = "") -> Dictionary:
+	var mode_key := poker_session_mode if mode.is_empty() else mode
+	return POKER_SESSION_MODES.get(mode_key, POKER_SESSION_MODES["short"]).duplicate(true)
+
+
+func poker_session_max_hands() -> int:
+	return int(poker_session_mode_info().get("max_hands", 8))
+
+
+func poker_session_time_cost() -> int:
+	return int(poker_session_mode_info().get("time_cost", 2))
+
+
+func poker_hand_limit() -> int:
+	return int(poker_session_mode_info().get("hand_limit", poker_session_buy_in))
+
+
+func poker_tutorial_lesson(hand_number: int = -1) -> Dictionary:
+	var lesson_index := poker_session_hands if hand_number < 0 else hand_number - 1
+	if lesson_index < 0 or lesson_index >= POKER_TUTORIAL_LESSONS.size():
+		return {}
+	var lesson: Dictionary = POKER_TUTORIAL_LESSONS[lesson_index]
+	var result := lesson.duplicate(true)
+	result["step"] = lesson_index + 1
+	result["total"] = POKER_TUTORIAL_LESSONS.size()
+	return result
+
+
+func begin_poker_session(buy_in: int = 80, mode: String = "short", invitation_id: String = "") -> void:
 	if poker_session_active:
 		return
 	var tier := poker_tier_for_buy_in(buy_in)
 	poker_session_buy_in = int(tier["buy_in"])
+	if not poker_completed and poker_session_buy_in == 80:
+		mode = "tutorial"
+	if not POKER_SESSION_MODES.has(mode):
+		mode = "short"
+	poker_session_mode = mode
+	poker_session_invitation_id = invitation_id
 	poker_session_active = true
-	poker_session_id = "table-%d" % int(Time.get_unix_time_from_system() * 1000.0)
+	poker_session_sequence += 1
+	poker_session_id = "table-d%03d-%05d" % [day, poker_session_sequence]
 	poker_session_hands = 0
 	poker_dealer_index = -1
 	poker_dealer_seat = -1
 	poker_session_end_reason = ""
 	poker_player_brought = cash
-	poker_session_tutorial = not poker_completed and poker_session_buy_in == 80
+	poker_session_tutorial = poker_session_mode == "tutorial"
 	poker_tutorial_balance = 100 if poker_session_tutorial else 0
 	poker_tutorial_settled = false
 	poker_session_time_charged = false
-	poker_session_seed = int(Time.get_unix_time_from_system() * 1000000.0) ^ int(Time.get_ticks_usec())
+	poker_session_seed = posmod(daily_seed, 2147483647) ^ (poker_session_sequence * 67867967) ^ (poker_session_buy_in * 104729) ^ poker_session_mode.hash()
 	rng.seed = poker_session_seed
 	poker = {}
+	poker_session_stats = {
+		"session_id": poker_session_id,
+		"mode": poker_session_mode,
+		"mode_name": str(poker_session_mode_info()["name"]),
+		"buy_in": poker_session_buy_in,
+		"cash_start": cash,
+		"bank_start": 100 if poker_session_tutorial else cash,
+		"hands": 0,
+		"wins": 0,
+		"ties": 0,
+		"losses": 0,
+		"folds": 0,
+		"service_fees": 0,
+		"biggest_pot": 0,
+		"all_in_actions": 0,
+		"invitation_id": invitation_id,
+		"finalized": false
+	}
 	poker_npc_wallets.clear()
 	poker_npc_brought.clear()
 	poker_npc_present.clear()
@@ -3346,11 +3546,122 @@ func _settle_poker_tutorial_profit() -> void:
 	poker_tutorial_settled = true
 
 
+func _update_poker_session_stats(outcome: String, bank_net: int, committed_total: int, service_fee: int) -> void:
+	if poker_session_stats.is_empty():
+		return
+	poker_session_stats["hands"] = int(poker_session_stats.get("hands", 0)) + 1
+	var outcome_key: String = {
+		"win": "wins",
+		"tie": "ties",
+		"loss": "losses",
+		"fold": "folds"
+	}.get(outcome, "losses")
+	poker_session_stats[outcome_key] = int(poker_session_stats.get(outcome_key, 0)) + 1
+	poker_session_stats["service_fees"] = int(poker_session_stats.get("service_fees", 0)) + service_fee
+	poker_session_stats["biggest_pot"] = maxi(int(poker_session_stats.get("biggest_pot", 0)), committed_total)
+	poker_session_stats["table_net"] = int(poker_session_stats.get("table_net", 0)) + bank_net
+	for raw_action in poker.get("action_history", []):
+		var action: Dictionary = raw_action
+		if int(action.get("seat", -1)) == 0 and str(action.get("action", "")) == "all_in":
+			poker_session_stats["all_in_actions"] = int(poker_session_stats.get("all_in_actions", 0)) + 1
+
+
+func _finalize_poker_session_summary(reason: String) -> void:
+	if poker_session_hands <= 0 or bool(poker_session_stats.get("finalized", false)):
+		return
+	poker_session_stats["finalized"] = true
+	if poker_session_tutorial and poker_session_hands >= int(POKER_SESSION_MODES["tutorial"]["max_hands"]):
+		poker_completed = true
+	var bank_end := poker_tutorial_balance if poker_session_tutorial else cash
+	var bank_start := int(poker_session_stats.get("bank_start", 100 if poker_session_tutorial else poker_player_brought))
+	var summary := poker_session_stats.duplicate(true)
+	summary["day"] = day
+	summary["tide"] = tide
+	summary["reason"] = reason
+	summary["bank_end"] = bank_end
+	summary["table_net"] = bank_end - bank_start
+	summary["cash_end"] = cash
+	summary["wallet_net"] = cash - int(poker_session_stats.get("cash_start", cash))
+	summary["time_cost"] = poker_session_time_cost()
+	summary["completed_mode"] = poker_session_hands >= poker_session_max_hands()
+	summary["tutorial_completed"] = poker_session_tutorial and poker_session_hands >= int(POKER_SESSION_MODES["tutorial"]["max_hands"])
+	summary["npc_wallets_after"] = poker_npc_wallets.duplicate()
+	summary["npc_left_names"] = poker.get("npc_left_names", []).duplicate() if not poker.is_empty() else []
+	var invitation := poker_invitation(poker_session_invitation_id)
+	summary["host_id"] = str(invitation.get("host_id", ""))
+	summary["host_name"] = str(invitation.get("host_name", ""))
+	poker_session_history.push_front(summary)
+	if poker_session_history.size() > 20:
+		poker_session_history.resize(20)
+	_record_poker_session_social(summary)
+	_initialize_poker_invitations()
+
+
+func _record_poker_session_social(summary: Dictionary) -> void:
+	var net := int(summary.get("table_net", 0))
+	var hands := int(summary.get("hands", 0))
+	var folds := int(summary.get("folds", 0))
+	var all_ins := int(summary.get("all_in_actions", 0))
+	var biggest_pot := int(summary.get("biggest_pot", 0))
+	var behavior := "保持了普通节奏"
+	if all_ins >= 2:
+		behavior = "多次把全部额度推入契约"
+	elif folds >= maxi(2, int(ceil(float(hands) * 0.45))):
+		behavior = "多次及时退契保存选择"
+	elif net > 0:
+		behavior = "在整场牌会中取得净赢"
+	elif net < 0:
+		behavior = "承受亏损后仍完成了牌会"
+	var summary_text := "你%s%s，共%d手，%s；最大底池%d金贝，桌上净变化%s金贝。" % [
+		"完成" if bool(summary.get("completed_mode", false)) else "离开了",
+		str(summary.get("mode_name", "牌会")), hands, behavior, biggest_pot, _signed_number(net)
+	]
+	for npc_id in ["old_joe", "granny", "mia"]:
+		add_npc_memory(npc_id, {
+			"memory_id": "poker_session_%s" % str(summary.get("session_id", "")),
+			"type": "poker_session",
+			"importance": 4 if abs(net) >= int(summary.get("buy_in", 80)) or all_ins >= 2 else 3,
+			"summary": summary_text,
+			"relationship_delta": 0,
+			"effects": {
+				"poker_courage": 2 if all_ins >= 2 else (-1 if folds >= 2 else 0),
+				"dialogue_warmth": 1
+			}
+		})
+	var host_id := str(summary.get("host_id", ""))
+	if bool(summary.get("completed_mode", false)) and not host_id.is_empty() and NPCS.has(host_id):
+		add_npc_memory(host_id, {
+			"memory_id": "poker_invitation_%s" % str(summary.get("session_id", "")),
+			"type": "poker_invitation",
+			"importance": 4,
+			"persistent": true,
+			"summary": "你接受了%s的牌会邀请并完成整场。" % str(summary.get("host_name", "对方")),
+			"relationship_delta": 1,
+			"effects": {"request_priority": 1, "dialogue_warmth": 1}
+		})
+
+
+func latest_poker_session_summary() -> Dictionary:
+	return poker_session_history[0].duplicate(true) if not poker_session_history.is_empty() else {}
+
+
+func poker_rumor_summary() -> String:
+	var summary := latest_poker_session_summary()
+	if summary.is_empty():
+		return "茶摊今天还没有形成新的整场牌会传闻。"
+	var net := int(summary.get("table_net", 0))
+	var outcome := "净赢%s金贝" % _signed_number(net) if net > 0 else ("净亏%d金贝" % abs(net) if net < 0 else "收支持平")
+	return "你%s%s：%d手、%s，最大底池%d金贝。" % [
+		"完成" if bool(summary.get("completed_mode", false)) else "离开了",
+		str(summary.get("mode_name", "牌会")), int(summary.get("hands", 0)), outcome, int(summary.get("biggest_pot", 0))
+	]
+
+
 func _charge_poker_session_time() -> void:
 	if poker_session_time_charged or poker_session_hands <= 0:
 		return
 	poker_session_time_charged = true
-	advance_time(2)
+	advance_time(poker_session_time_cost())
 	_record_wealth("命运牌会 · 离桌")
 
 
@@ -3359,6 +3670,7 @@ func _close_poker_session(reason: String) -> void:
 	poker_session_end_reason = reason
 	_settle_poker_tutorial_profit()
 	_charge_poker_session_time()
+	_finalize_poker_session_summary(reason)
 	if not poker.is_empty():
 		poker["session_ended"] = true
 		poker["session_end_reason"] = poker_session_end_reason
@@ -3465,6 +3777,45 @@ func _poker_total_committed() -> int:
 	return total
 
 
+func _oracle_card_id(element: int, rank: int, copy_index: int = 0) -> int:
+	return clampi(element, 0, 1) * 24 + (clampi(rank, 1, 6) - 1) * 4 + clampi(copy_index, 0, 3)
+
+
+func _poker_tutorial_forced_cards(step: int) -> Dictionary:
+	match step:
+		1:
+			return {
+				"player": [_oracle_card_id(0, 2), _oracle_card_id(1, 5)],
+				"community": [_oracle_card_id(0, 1), _oracle_card_id(1, 2), _oracle_card_id(0, 3), _oracle_card_id(1, 4), _oracle_card_id(0, 6)]
+			}
+		2:
+			return {
+				"player": [_oracle_card_id(0, 3, 0), _oracle_card_id(0, 3, 1)],
+				"community": [_oracle_card_id(1, 1), _oracle_card_id(0, 2), _oracle_card_id(1, 4), _oracle_card_id(0, 5), _oracle_card_id(1, 6)]
+			}
+		3:
+			return {
+				"player": [_oracle_card_id(0, 1), _oracle_card_id(1, 2)],
+				"community": [_oracle_card_id(0, 3), _oracle_card_id(1, 4), _oracle_card_id(0, 5), _oracle_card_id(1, 6), _oracle_card_id(0, 6)]
+			}
+		4:
+			return {
+				"player": [_oracle_card_id(0, 1), _oracle_card_id(0, 6)],
+				"community": [_oracle_card_id(1, 2), _oracle_card_id(1, 5), _oracle_card_id(0, 3), _oracle_card_id(1, 4), _oracle_card_id(0, 4)]
+			}
+		5:
+			return {
+				"player": [_oracle_card_id(0, 1), _oracle_card_id(1, 6)],
+				"community": [_oracle_card_id(0, 2), _oracle_card_id(1, 3), _oracle_card_id(0, 4), _oracle_card_id(1, 5), _oracle_card_id(0, 6)]
+			}
+		6:
+			return {
+				"player": [_oracle_card_id(0, 5), _oracle_card_id(1, 5)],
+				"community": [_oracle_card_id(0, 1), _oracle_card_id(1, 1), _oracle_card_id(0, 3), _oracle_card_id(1, 3), _oracle_card_id(0, 6)]
+			}
+	return {}
+
+
 func start_poker_hand(buy_in_override: int = -1) -> Dictionary:
 	if not poker.is_empty() and not bool(poker.get("completed", true)):
 		return {"ok": false, "text": "当前命运契约还没有结束。"}
@@ -3474,13 +3825,13 @@ func start_poker_hand(buy_in_override: int = -1) -> Dictionary:
 	if not poker_session_active:
 		begin_poker_session(requested_buy_in)
 	var tier := poker_tier_for_buy_in(poker_session_buy_in)
-	var buy_in := int(tier["buy_in"])
+	var buy_in := poker_hand_limit()
 	if account_wealth() < int(tier["wealth_required"]):
 		return {"ok": false, "text": "%s需要账户财富达到%d金贝。" % [str(tier["name"]), int(tier["wealth_required"])]}
 	if poker_player_available() < buy_in:
 		return {"ok": false, "text": "进入%s至少需要%d金贝%s。" % [str(tier["name"]), buy_in, "教学额度" if poker_session_tutorial else ""]}
-	if poker_session_hands >= 8:
-		_close_poker_session("短牌会最多8手，本次牌会结束。")
+	if poker_session_hands >= poker_session_max_hands():
+		_close_poker_session("%s已完成%d手，本次牌会结束。" % [str(poker_session_mode_info()["name"]), poker_session_max_hands()])
 		return {"ok": false, "session_ended": true, "text": poker_session_end_reason}
 	for index in range(5):
 		if index >= poker_npc_wallets.size() or int(poker_npc_wallets[index]) <= 0:
@@ -3497,14 +3848,24 @@ func start_poker_hand(buy_in_override: int = -1) -> Dictionary:
 	var deck: Array[int] = []
 	for card in range(48):
 		deck.append(card)
+	var tutorial_step := poker_session_hands + 1
+	var forced := _poker_tutorial_forced_cards(tutorial_step) if poker_session_tutorial else {}
+	var player_hand: Array = []
+	var community: Array = []
+	if not forced.is_empty():
+		player_hand = forced["player"].duplicate()
+		community = forced["community"].duplicate()
+		for forced_card in player_hand + community:
+			deck.erase(int(forced_card))
 	_shuffle(deck)
-	var player_hand := [deck.pop_back(), deck.pop_back()]
+	if player_hand.is_empty():
+		player_hand = [deck.pop_back(), deck.pop_back()]
 	var opponent_hands: Array = []
 	for _opponent in range(5):
 		opponent_hands.append([deck.pop_back(), deck.pop_back()])
-	var community: Array = []
-	for _card in range(5):
-		community.append(deck.pop_back())
+	if community.is_empty():
+		for _card in range(5):
+			community.append(deck.pop_back())
 
 	var seats: Array = []
 	seats.append({"seat": 0, "name": "你", "npc_index": -1, "present": true, "stack": buy_in, "round_commit": 0, "hand_commit": 0, "folded": false, "all_in": false, "needs_action": true, "round_actions": 0, "action": "等待行动"})
@@ -3517,8 +3878,10 @@ func start_poker_hand(buy_in_override: int = -1) -> Dictionary:
 
 	poker_session_hands += 1
 	poker = {
-		"hand_id": "oracle-%d-%d" % [int(Time.get_unix_time_from_system() * 1000.0), poker_session_hands],
+		"hand_id": "oracle-%s-%02d" % [poker_session_id, poker_session_hands],
 		"session_id": poker_session_id, "session_hand": poker_session_hands, "session_seed": poker_session_seed,
+		"session_mode": poker_session_mode, "session_mode_name": str(poker_session_mode_info()["name"]),
+		"session_max_hands": poker_session_max_hands(), "tutorial_lesson": poker_tutorial_lesson(poker_session_hands) if poker_session_tutorial else {},
 		"cash_before": cash_before_hand, "player_bank_before": bank_before,
 		"buy_in": buy_in, "tier_name": str(tier["name"]), "small_blind": int(tier["small_blind"]), "big_blind": int(tier["big_blind"]),
 		"completed": false, "stage": 0, "player_hand": player_hand, "opponent_hands": opponent_hands, "community": community,
@@ -3962,7 +4325,7 @@ func _finish_poker_state_machine(reason: String, scores: Dictionary) -> Dictiona
 	poker["completed"] = true
 	if not poker_session_tutorial:
 		normal_poker_completed = true
-	poker_completed = true
+		poker_completed = true
 	poker["npc_left_names"] = left_names
 	poker["npc_wallets_after"] = poker_npc_wallets.duplicate()
 	poker["side_pots"] = pot_result["pots"]
@@ -3977,11 +4340,13 @@ func _finish_poker_state_machine(reason: String, scores: Dictionary) -> Dictiona
 		outcome = "tie"
 	var outcome_labels := {"fold": "退契", "win": "胜利", "loss": "失利", "tie": "平分"}
 	var outcome_label := str(outcome_labels[outcome])
+	var committed_total := int(pot_result["committed_total"])
+	_update_poker_session_stats(outcome, bank_net, committed_total, int(pot_result["service_fee"]))
 	var session_reason := ""
 	if not left_names.is_empty():
 		session_reason = "%s的钱包已经归零，本次牌会结束。" % "、".join(left_names)
-	elif poker_session_hands >= 8:
-		session_reason = "短牌会已完成8手，本次牌会结束。"
+	elif poker_session_hands >= poker_session_max_hands():
+		session_reason = "%s已完成%d手，本次牌会结束。" % [str(poker_session_mode_info()["name"]), poker_session_max_hands()]
 	elif poker_player_available() < int(poker.get("buy_in", 80)):
 		session_reason = "%s不足以进入下一手，本次牌会结束。" % ("教学额度" if poker_session_tutorial else "持有金贝")
 	if not session_reason.is_empty():
@@ -3993,7 +4358,6 @@ func _finish_poker_state_machine(reason: String, scores: Dictionary) -> Dictiona
 	for amount in refunds:
 		accounted += int(amount)
 	accounted += int(pot_result["service_fee"])
-	var committed_total := int(pot_result["committed_total"])
 	if accounted != committed_total:
 		push_error("牌会资金守恒失败：投入%d，分配%d" % [committed_total, accounted])
 	poker["settlement"] = {

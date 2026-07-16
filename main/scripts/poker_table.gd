@@ -299,7 +299,13 @@ func _refresh() -> void:
 	_clear(footer_box)
 	var has_hand: bool = not game.poker.is_empty()
 	var active: bool = _hand_is_active() or animation_busy
-	header_stage.text = "阶段：%s" % (game.poker_stage_name() if has_hand else "等待入席")
+	var mode_info: Dictionary = game.poker_session_mode_info()
+	header_stage.text = "%s %d/%d · %s" % [
+		str(mode_info.get("name", "牌会")),
+		int(game.poker_session_hands),
+		int(mode_info.get("max_hands", 8)),
+		game.poker_stage_name() if has_hand else "等待开手"
+	]
 	var session_tier: Dictionary = game.poker_tier_for_buy_in(int(game.poker_session_buy_in))
 	header_pot.text = "底池 %d金贝" % int(game.poker.get("pot", 0)) if has_hand else "基础投入 %d / %d金贝" % [int(session_tier["small_blind"]), int(session_tier["big_blind"])]
 	var currency_label := "教学额度" if game.poker_session_tutorial and not game.poker_tutorial_settled else "持有"
@@ -670,6 +676,13 @@ func _player_seat() -> Control:
 
 func _build_right_panel() -> void:
 	var completed: bool = _view_completed()
+	if game.poker_session_tutorial:
+		var lesson: Dictionary = game.poker.get("tutorial_lesson", {}) if not game.poker.is_empty() else game.poker_tutorial_lesson(game.poker_session_hands + 1)
+		if not lesson.is_empty():
+			right_box.add_child(_section("教学 %d/%d · %s" % [int(lesson["step"]), int(lesson["total"]), str(lesson["title"])]))
+			right_box.add_child(_wrapped(str(lesson["objective"]), 14, Color("f2d88a")))
+			right_box.add_child(_wrapped(str(lesson["hint"]), 12, Color("9fc3c2")))
+			right_box.add_child(HSeparator.new())
 	if completed:
 		right_box.add_child(_section("各席最终命象"))
 		for raw_entry in game.poker.get("final_readings", []):
@@ -732,7 +745,16 @@ func _build_footer() -> void:
 		else:
 			var tier: Dictionary = game.poker_tier_for_buy_in(int(game.poker_session_buy_in))
 			var buy_in := int(tier["buy_in"])
-			footer_box.add_child(_button("开始下一手 · %s · 上限%d金贝" % [str(tier["name"]), buy_in], _start_hand, not game.can_enter_poker_tier(buy_in)))
+			var mode_info: Dictionary = game.poker_session_mode_info()
+			var next_hand := int(game.poker_session_hands) + 1
+			var next_label := (
+				"开始教学第%d手 · %s" % [next_hand, str(game.poker_tutorial_lesson(next_hand).get("title", "规则练习"))]
+				if game.poker_session_tutorial else
+				"开始下一手 · %s %d/%d · 上限%d金贝" % [
+					str(mode_info.get("name", "牌会")), next_hand, int(mode_info.get("max_hands", 8)), buy_in
+				]
+			)
+			footer_box.add_child(_button(next_label, _start_hand, not game.can_enter_poker_tier(buy_in)))
 		footer_box.add_child(_button("返回岛上", _header_leave))
 		return
 

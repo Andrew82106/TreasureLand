@@ -74,9 +74,9 @@ func _test_seal_history_time_and_save() -> void:
 	assert(int(state.current_race_event().get("slot", -1)) == 1, "进入白天后必须开放第二场固定赛事。")
 
 	var saved := state.build_save_data({})
-	assert(int(saved.get("version", 0)) == 4, "赛事快照与历史必须进入版本4存档。")
+	assert(int(saved.get("version", 0)) == 5, "赛事快照与历史必须进入当前版本5存档。")
 	var restored = _state()
-	assert(bool(restored.restore_save_data(saved).get("ok", false)), "版本4赛事状态必须可读取。")
+	assert(bool(restored.restore_save_data(saved).get("ok", false)), "当前版本赛事状态必须可读取。")
 	assert(restored.race_events == state.race_events and restored.race_history == state.race_history, "读档不能重掷已经锁定的票池、赛果或历史。")
 	var legacy = _state()
 	assert(bool(legacy.restore_save_data({

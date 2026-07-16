@@ -42,7 +42,7 @@ func _test_discovery_records_and_migration() -> void:
 	assert(state.item_verified_relation_count("water") == 1 and state.item_untried_pair_count("water") > 0, "详情统计必须区分已验证与尚未尝试的配对。")
 
 	var save_data := state.build_save_data({})
-	assert(int(save_data.get("version", 0)) == 4, "发现档案与赛事快照必须进入版本4存档。")
+	assert(int(save_data.get("version", 0)) == 5, "发现档案、赛事与牌会场次必须进入版本5存档。")
 	var restored = _state()
 	assert(bool(restored.restore_save_data(save_data).get("ok", false)), "当前版本发现档案必须可往返读取。")
 	assert(restored.discovery_record("steam") == steam, "发现来源、输入、关系和时间必须完整跨存档保留。")
