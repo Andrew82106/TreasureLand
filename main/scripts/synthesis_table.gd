@@ -8,6 +8,7 @@ const CreationAtlas = preload("res://assets/art/synthesis_collection_atlas_v1.pn
 const IslandBackdrop = preload("res://assets/art/island_panorama_v1.png")
 const BasinBackdrop = preload("res://assets/art/synthesis_basin_backdrop_v1.svg")
 const RelationVfxScript = preload("res://scripts/synthesis_relation_vfx.gd")
+const SIGNAL_RETIREMENT_FRAMES := 4
 
 const RELATION_FAMILY_BY_LABEL := {
 	"聚集": "converge", "汇聚": "converge", "混合": "converge", "调和": "converge",
@@ -38,6 +39,7 @@ var busy: bool = false
 var rebuild_queued: bool = false
 var pulse_after_rebuild: bool = false
 var strong_pulse_after_rebuild: bool = false
+var rebuild_in_progress: bool = false
 var center_pulse_tween: Tween
 var presentation_tween: Tween
 var presentation_generation: int = 0
@@ -114,22 +116,24 @@ func request_collection() -> void:
 
 
 func _rebuild() -> void:
+	if rebuild_in_progress:
+		_queue_rebuild()
+		return
+	rebuild_in_progress = true
 	presentation_generation += 1
-	if presentation_tween != null and presentation_tween.is_valid() and presentation_tween.is_running():
-		presentation_tween.kill()
+	_retire_tween(presentation_tween)
 	presentation_tween = null
-	if center_pulse_tween != null and center_pulse_tween.is_valid() and center_pulse_tween.is_running():
-		center_pulse_tween.kill()
+	_retire_tween(center_pulse_tween)
 	center_pulse_tween = null
 	motion_layer = null
 	left_input_card = null
 	right_input_card = null
 	for child in get_children():
-		# A rebuild can be requested by a Button signal. Removing the old tree
-		# immediately keeps it out of layout/input, while queue_free() guarantees
-		# the signal emitter stays alive until Godot has finished dispatching.
-		remove_child(child)
-		child.queue_free()
+		# Godot 4.7 can keep native BaseButton, Tween and layout signal dispatch
+		# alive beyond a deferred call and even beyond one process frame. Do not
+		# detach or free an emitter tree while rebuilding. Retire it invisibly,
+		# keep it inside the SceneTree for several complete frames, then free it.
+		_retire_ui_root(child)
 	page_root = ColorRect.new()
 	page_root.color = Color("08191f")
 	page_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -172,6 +176,48 @@ func _rebuild() -> void:
 	graph_overlay = _build_graph_overlay()
 	page_root.add_child(graph_overlay)
 	graph_overlay.visible = false
+	rebuild_in_progress = false
+
+
+func _retire_ui_root(node: Node) -> void:
+	if node == null or not is_instance_valid(node):
+		return
+	node.process_mode = Node.PROCESS_MODE_DISABLED
+	if node is CanvasItem:
+		(node as CanvasItem).visible = false
+	if node is Control:
+		(node as Control).mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_release_ui_root_after_signal_unwind(node)
+
+
+func _release_ui_root_after_signal_unwind(node: Node) -> void:
+	var tree := get_tree()
+	if tree == null:
+		return
+	for frame in range(SIGNAL_RETIREMENT_FRAMES):
+		await tree.process_frame
+	if is_instance_valid(node):
+		node.queue_free()
+
+
+func _retire_tween(tween: Tween) -> void:
+	if tween == null:
+		return
+	if tween.is_valid() and tween.is_running():
+		tween.kill()
+	_hold_tween_after_signal_unwind(tween)
+
+
+func _hold_tween_after_signal_unwind(tween: Tween) -> void:
+	var tree := get_tree()
+	if tree == null:
+		return
+	# The coroutine-local reference deliberately keeps a completed Tween alive.
+	# Releasing the last reference from Tween.finished can crash Godot 4.7.
+	for frame in range(SIGNAL_RETIREMENT_FRAMES):
+		await tree.process_frame
+	if tween != null and tween.is_valid() and tween.is_running():
+		tween.kill()
 
 
 func _queue_rebuild(pulse_center: bool = false, strong_pulse: bool = false) -> void:
@@ -823,6 +869,7 @@ func _finish_presentation_tween(tween: Tween) -> void:
 	if not is_inside_tree():
 		return
 	await get_tree().process_frame
+	_hold_tween_after_signal_unwind(tween)
 	if presentation_tween == tween:
 		presentation_tween = null
 
@@ -837,8 +884,7 @@ func _pulse_center(strong: bool = false) -> void:
 	center_stage.pivot_offset = center_stage.size * 0.5
 	center_stage.scale = Vector2(0.985, 0.985) if strong else Vector2(0.994, 0.994)
 	center_stage.modulate = Color("fff2b8") if strong else Color("d9f6ed")
-	if center_pulse_tween != null and center_pulse_tween.is_valid() and center_pulse_tween.is_running():
-		center_pulse_tween.kill()
+	_retire_tween(center_pulse_tween)
 	center_pulse_tween = create_tween().set_parallel(true)
 	center_pulse_tween.tween_property(center_stage, "scale", Vector2.ONE, 0.28 if strong else 0.14).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	center_pulse_tween.tween_property(center_stage, "modulate", Color.WHITE, 0.28 if strong else 0.14)

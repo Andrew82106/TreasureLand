@@ -109,6 +109,12 @@ func _run() -> void:
 		await process_frame
 		assert(bool(table.last_result.get("ok", false)), "The animated result must survive its post-signal rebuild.")
 
+	# Retired UI generations remain hidden for several frames so native signal
+	# dispatch can unwind, but must still be collected instead of leaking forever.
+	for frame in range(table.SIGNAL_RETIREMENT_FRAMES + 3):
+		await process_frame
+	assert(table.get_child_count() == 1, "Only the active synthesis page may remain after the retirement window.")
+
 	print("SYNTHESIS SIGNAL LIFETIME TEST PASS")
 	quit(0)
 
