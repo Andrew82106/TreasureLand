@@ -6,12 +6,14 @@ const WorldLayoutScript = preload("res://scripts/world_layout.gd")
 var map_texture: Texture2D
 var discovered_areas: Dictionary = {}
 var player_position := Vector2.ZERO
+var npc_entries: Array = []
 
 
-func setup(texture_value: Texture2D, discovered_value: Dictionary, player_value: Vector2) -> void:
+func setup(texture_value: Texture2D, discovered_value: Dictionary, player_value: Vector2, npc_value: Array = []) -> void:
 	map_texture = texture_value
 	discovered_areas = discovered_value.duplicate()
 	player_position = player_value
+	npc_entries = npc_value.duplicate(true)
 	custom_minimum_size = Vector2(730, 266)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	queue_redraw()
@@ -45,6 +47,8 @@ func _draw() -> void:
 		)
 
 	for definition in WorldLayoutScript.MARKERS:
+		if WorldLayoutScript.CORE_NPC_IDS.has(str(definition["id"])):
+			continue
 		if not discovered_areas.has(str(definition["area"])):
 			continue
 		var marker_position: Vector2 = definition["position"]
@@ -61,6 +65,32 @@ func _draw() -> void:
 			-1,
 			9,
 			Color("f8f1d8")
+		)
+
+	var area_npc_counts := {}
+	for raw_entry in npc_entries:
+		var entry: Dictionary = raw_entry
+		var area_name := str(entry.get("area", ""))
+		if area_name.is_empty() or not discovered_areas.has(area_name) or not WorldLayoutScript.REGIONS.has(area_name):
+			continue
+		var region: Rect2 = WorldLayoutScript.REGIONS[area_name]["rect"]
+		var area_index := int(area_npc_counts.get(area_name, 0))
+		area_npc_counts[area_name] = area_index + 1
+		# The map intentionally resolves a known person only to their current
+		# region, never to the exact world coordinate at their feet.
+		var region_anchor := region.position + Vector2(115 + area_index * 78, 72)
+		var point := map_rect.position + region_anchor * scale_value
+		var marker_color: Color = entry.get("color", Color("f8f1d8"))
+		draw_circle(point, 6.0, Color("102b34"))
+		draw_circle(point, 4.0, marker_color if bool(entry.get("available", false)) else Color("687a7d"))
+		draw_string(
+			ThemeDB.fallback_font,
+			point + Vector2(7, 4),
+			str(entry.get("name", "人物")),
+			HORIZONTAL_ALIGNMENT_LEFT,
+			-1,
+			9,
+			Color("fff0bc") if bool(entry.get("available", false)) else Color("9eaaab")
 		)
 
 	var player_point := map_rect.position + player_position * scale_value

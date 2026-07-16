@@ -48,6 +48,8 @@ const MARKERS := [
 	{"id": "milo", "label": "米洛", "position": Vector2(3158, 900), "color": Color("95b9ff"), "area": "逐风海岸"},
 ]
 
+const CORE_NPC_IDS := ["granny", "shopkeeper", "mia", "old_joe", "aqiu", "milo"]
+
 const NPC_VISUALS := [
 	{"id": "granny", "position": Vector2(918, 555), "atlas": "res://assets/art/characters/rong_granny/world/rong_granny_world_atlas_v1.png", "facing": 0},
 	{"id": "shopkeeper", "position": Vector2(1455, 742), "atlas": "res://assets/art/characters/a_tuo/world/a_tuo_world_atlas_v1.png", "facing": 0},

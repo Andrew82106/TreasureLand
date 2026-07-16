@@ -7,10 +7,13 @@ signal time_boundary(kind: String, data: Dictionary)
 
 const SynthesisCatalog = preload("res://scripts/synthesis_catalog.gd")
 const FishCatalog = preload("res://scripts/fish_catalog.gd")
+const NpcCatalog = preload("res://scripts/npc_catalog.gd")
 const ITEMS := SynthesisCatalog.ITEMS
 const RECIPES := SynthesisCatalog.RECIPES
 const FISH_SPECIES := FishCatalog.SPECIES
 const DIVE_AREAS := FishCatalog.AREAS
+const NPCS := NpcCatalog.CORE
+const ENVIRONMENT_RESIDENTS := NpcCatalog.RESIDENTS
 
 const INITIAL_DISCOVERIES := ["water", "fire", "earth"]
 const MAX_SYNTHESIS_TIER := 4
@@ -57,7 +60,7 @@ const TIME_STATE_UI := "ui_paused"
 const TIME_STATE_ACTIVITY := "activity_snapshot"
 const TIME_STATE_FAST_FORWARD := "fast_forward"
 const TIME_STATE_DAY_END := "day_end_hold"
-const SAVE_VERSION := 1
+const SAVE_VERSION := 2
 const MANUAL_SAVE_PATH := "user://saves/manual_save.json"
 const POKER_TIERS := [
 	{"name": "潮边小桌", "buy_in": 80, "wealth_required": 0, "small_blind": 1, "big_blind": 2, "description": "认识规则与人物，输赢幅度较小"},
@@ -87,6 +90,7 @@ const ORACLE_OPPONENTS := [
 	{"name": "榕奶奶", "style": "礁石型", "color": "eaa6ba"},
 	{"name": "旅人洛沙", "style": "海雾型", "color": "79b9c8"}
 ]
+const ORACLE_NPC_IDS := ["old_joe", "shopkeeper", "mia", "granny", "luosha"]
 
 var cash: int = 120
 var locked_principal: int = 0
@@ -112,6 +116,14 @@ var last_shop_hint: String = ""
 var last_shop_hint_key: String = ""
 var relationships := {"granny": 10, "old_joe": 0, "aqiu": 0, "mia": 0, "milo": 0, "shopkeeper": 0}
 var memories := {}
+var known_npcs := {"granny": true}
+var npc_topic_reads := {}
+var npc_request_states := {}
+var npc_shared_creations := {}
+var npc_shared_fish := {}
+var npc_deep_talk_days := {}
+var npc_talk_counts := {}
+var npc_memory_rewarded := {}
 var free_race_ticket: int = 1
 var fishing_attempts_today: int = 0
 var dive_windows_remaining: int = DAILY_FISHING_LIMIT
@@ -137,6 +149,7 @@ var processed_fish_sales := {}
 var dive_equipment := {"oxygen": 50.0, "basket": 4, "swim_speed": 1.0, "preservation_days": 0}
 var last_dive_result := {}
 var poker_completed: bool = false
+var normal_poker_completed: bool = false
 var aqiu_request_active: bool = false
 var aqiu_request_done: bool = false
 var ultimate_created: bool = false
@@ -167,6 +180,7 @@ var rng := RandomNumberGenerator.new()
 
 func _init() -> void:
 	rng.seed = 20260713
+	_initialize_npc_state()
 	_generate_daily_schedule()
 	_initialize_fish_market()
 	_load_recent_oracle_records()
@@ -206,6 +220,14 @@ func build_save_data(world_state: Dictionary = {}) -> Dictionary:
 			"last_shop_hint_key": last_shop_hint_key,
 			"relationships": relationships.duplicate(true),
 			"memories": memories.duplicate(true),
+			"known_npcs": known_npcs.duplicate(true),
+			"npc_topic_reads": npc_topic_reads.duplicate(true),
+			"npc_request_states": npc_request_states.duplicate(true),
+			"npc_shared_creations": npc_shared_creations.duplicate(true),
+			"npc_shared_fish": npc_shared_fish.duplicate(true),
+			"npc_deep_talk_days": npc_deep_talk_days.duplicate(true),
+			"npc_talk_counts": npc_talk_counts.duplicate(true),
+			"npc_memory_rewarded": npc_memory_rewarded.duplicate(true),
 			"free_race_ticket": free_race_ticket,
 			"fishing_attempts_today": fishing_attempts_today,
 			"dive_windows_remaining": dive_windows_remaining,
@@ -230,6 +252,7 @@ func build_save_data(world_state: Dictionary = {}) -> Dictionary:
 			"dive_equipment": dive_equipment.duplicate(true),
 			"last_dive_result": last_dive_result.duplicate(true),
 			"poker_completed": poker_completed,
+			"normal_poker_completed": normal_poker_completed,
 			"aqiu_request_active": aqiu_request_active,
 			"aqiu_request_done": aqiu_request_done,
 			"ultimate_created": ultimate_created,
@@ -342,6 +365,14 @@ func restore_save_data(data: Dictionary) -> Dictionary:
 	last_shop_hint_key = str(saved.get("last_shop_hint_key", ""))
 	relationships = saved.get("relationships", {}).duplicate(true)
 	memories = saved.get("memories", {}).duplicate(true)
+	known_npcs = saved.get("known_npcs", {"granny": true}).duplicate(true)
+	npc_topic_reads = saved.get("npc_topic_reads", {}).duplicate(true)
+	npc_request_states = saved.get("npc_request_states", {}).duplicate(true)
+	npc_shared_creations = saved.get("npc_shared_creations", {}).duplicate(true)
+	npc_shared_fish = saved.get("npc_shared_fish", {}).duplicate(true)
+	npc_deep_talk_days = saved.get("npc_deep_talk_days", {}).duplicate(true)
+	npc_talk_counts = saved.get("npc_talk_counts", {}).duplicate(true)
+	npc_memory_rewarded = saved.get("npc_memory_rewarded", {}).duplicate(true)
 	free_race_ticket = maxi(0, int(saved.get("free_race_ticket", 0)))
 	fishing_attempts_today = clampi(int(saved.get("fishing_attempts_today", 0)), 0, DAILY_FISHING_LIMIT)
 	dive_windows_remaining = clampi(int(saved.get("dive_windows_remaining", DAILY_FISHING_LIMIT - fishing_attempts_today)), 0, DAILY_FISHING_LIMIT)
@@ -368,8 +399,15 @@ func restore_save_data(data: Dictionary) -> Dictionary:
 	dive_equipment = saved.get("dive_equipment", {"oxygen": 50.0, "basket": 4, "swim_speed": 1.0, "preservation_days": 0}).duplicate(true)
 	last_dive_result = saved.get("last_dive_result", {}).duplicate(true)
 	poker_completed = bool(saved.get("poker_completed", false))
+	normal_poker_completed = bool(saved.get("normal_poker_completed", false))
+	if not saved.has("normal_poker_completed"):
+		for raw_record in recent_oracle_records:
+			if raw_record is Dictionary and not bool(raw_record.get("tutorial", false)):
+				normal_poker_completed = true
+				break
 	aqiu_request_active = bool(saved.get("aqiu_request_active", false))
 	aqiu_request_done = bool(saved.get("aqiu_request_done", false))
+	_initialize_npc_state()
 	ultimate_created = bool(saved.get("ultimate_created", false))
 	poker_dealer_seat = int(saved.get("poker_dealer_seat", -1))
 	poker_npc_wallets = saved.get("poker_npc_wallets", []).duplicate(true)
@@ -398,7 +436,7 @@ func _validate_save_data(data: Dictionary) -> Dictionary:
 	if not data.get("state", {}) is Dictionary or not data.get("world", {}) is Dictionary:
 		return {"ok": false, "text": "存档结构损坏，未修改当前进度。"}
 	var saved: Dictionary = data["state"]
-	for key in ["daily_schedule", "discovered", "attempted_pairs", "relationships", "memories", "dive_state", "marine_discoveries", "marine_size_records", "fish_market_quotes", "fish_market_stock", "fish_market_demand", "fish_market_reasons", "processed_fish_sales", "dive_equipment", "last_dive_result"]:
+	for key in ["daily_schedule", "discovered", "attempted_pairs", "relationships", "memories", "known_npcs", "npc_topic_reads", "npc_request_states", "npc_shared_creations", "npc_shared_fish", "npc_deep_talk_days", "npc_talk_counts", "npc_memory_rewarded", "dive_state", "marine_discoveries", "marine_size_records", "fish_market_quotes", "fish_market_stock", "fish_market_demand", "fish_market_reasons", "processed_fish_sales", "dive_equipment", "last_dive_result"]:
 		if saved.has(key) and not saved[key] is Dictionary:
 			return {"ok": false, "text": "存档字段%s损坏，未修改当前进度。" % key}
 	for key in ["time_event_log", "recent_synthesis_pairs", "wealth_history", "poker_npc_wallets", "poker_npc_brought", "poker_npc_present", "fish_catch_inventory", "fish_market_orders", "fish_market_history", "fish_market_transactions"]:
@@ -700,28 +738,157 @@ func refresh_day() -> void:
 	changed.emit()
 
 
+func _initialize_npc_state() -> void:
+	for npc_id in NpcCatalog.core_ids():
+		relationships[npc_id] = clampi(int(relationships.get(npc_id, 0)), -100, 100)
+		if not known_npcs.has(npc_id):
+			known_npcs[npc_id] = false
+		var raw_memory = memories.get(npc_id, {})
+		if raw_memory is Array:
+			var migrated_recent: Array = []
+			for index in range(raw_memory.size()):
+				migrated_recent.append({
+					"memory_id": "legacy_%s_%d" % [npc_id, index],
+					"type": "legacy",
+					"importance": 1,
+					"created_day": day,
+					"created_tide": tide,
+					"summary": str(raw_memory[index]),
+					"relationship_delta": 0,
+					"effects": {},
+					"occurrences": 1
+				})
+			memories[npc_id] = {"recent": migrated_recent, "long": []}
+		elif raw_memory is Dictionary:
+			var store: Dictionary = raw_memory
+			var recent = store.get("recent", [])
+			var long_term = store.get("long", [])
+			memories[npc_id] = {
+				"recent": recent.duplicate(true) if recent is Array else [],
+				"long": long_term.duplicate(true) if long_term is Array else []
+			}
+		else:
+			memories[npc_id] = {"recent": [], "long": []}
+		if not npc_request_states.has(npc_id) or not npc_request_states[npc_id] is Dictionary:
+			npc_request_states[npc_id] = {"state": "available", "accepted_day": 0, "completed_day": 0}
+	known_npcs["granny"] = true
+	var aqiu_state: Dictionary = npc_request_states.get("aqiu", {})
+	if aqiu_request_done:
+		aqiu_state["state"] = "completed"
+	elif aqiu_request_active:
+		aqiu_state["state"] = "active"
+	elif str(aqiu_state.get("state", "")) == "completed":
+		aqiu_request_done = true
+	elif str(aqiu_state.get("state", "")) == "active":
+		aqiu_request_active = true
+	npc_request_states["aqiu"] = aqiu_state
+
+
 func _generate_daily_schedule() -> void:
+	var npc_locations := {}
+	var npc_schedule := {}
+	for npc_id in NpcCatalog.core_ids():
+		var locations := {}
+		var records := {}
+		for phase in NpcCatalog.PHASES:
+			var entry := NpcCatalog.schedule_entry(npc_id, phase)
+			locations[phase] = str(entry.get("location", "未知区域"))
+			records[phase] = entry
+		npc_locations[npc_id] = locations
+		npc_schedule[npc_id] = records
 	daily_schedule = {
 		"day": day,
 		"seed": daily_seed,
 		"weather": weather,
 		"wind": wind_direction,
-		"npc_locations": {
-			"granny": {"清晨": "漂流湾造化盆", "白天": "椰影茶摊", "傍晚": "椰影茶摊", "夜晚": "椰影茶摊"},
-			"old_joe": {"清晨": "椰影茶摊", "白天": "椰影街", "傍晚": "椰影茶摊", "夜晚": "椰影茶摊牌局"},
-			"aqiu": {"清晨": "逐风海岸马厩", "白天": "逐风海岸赛场", "傍晚": "逐风海岸看台", "夜晚": "逐风海岸休息区"},
-			"mia": {"清晨": "椰影街报亭", "白天": "逐风海岸采访区", "傍晚": "椰影街报亭", "夜晚": "椰影茶摊"},
-			"milo": {"清晨": "未出现", "白天": "未出现", "傍晚": "特殊事件", "夜晚": "椰影茶摊"},
-			"shopkeeper": {"清晨": "椰影杂货铺", "白天": "椰影杂货铺", "傍晚": "椰影杂货铺", "夜晚": "代班服务"}
-		},
+		"npc_locations": npc_locations,
+		"npc_schedule": npc_schedule,
 		"regular_race_tides": [3, 7, 11, 15],
 		"fish_market_refresh_tides": [1, 5, 9, 13]
 	}
 
 
+func npc_profile(npc_id: String) -> Dictionary:
+	return NpcCatalog.core_profile(npc_id)
+
+
+func meet_npc(npc_id: String) -> bool:
+	if not NPCS.has(npc_id):
+		return false
+	var first_meeting := not bool(known_npcs.get(npc_id, false))
+	known_npcs[npc_id] = true
+	if first_meeting:
+		add_npc_memory(npc_id, {
+			"memory_id": "first_meeting",
+			"type": "meeting",
+			"importance": 2,
+			"summary": "你们在%s第一次正式交谈。" % npc_location(npc_id),
+			"relationship_delta": 0,
+			"effects": {"dialogue_warmth": 1}
+		})
+		changed.emit()
+	return first_meeting
+
+
+func npc_schedule_entry(npc_id: String, phase: String = "") -> Dictionary:
+	var current_phase := phase_name() if phase.is_empty() else phase
+	var entry := NpcCatalog.schedule_entry(npc_id, current_phase)
+	if entry.is_empty():
+		return {"available": false, "area": "", "location": "未知区域", "activity": "行踪不明"}
+	var available := bool(entry.get("available", true))
+	if str(entry.get("requires", "")) == "complete_poker" and not normal_poker_completed:
+		available = false
+	entry["available"] = available
+	return entry
+
+
 func npc_location(npc_id: String) -> String:
-	var locations: Dictionary = daily_schedule.get("npc_locations", {}).get(npc_id, {})
-	return str(locations.get(phase_name(), "未知区域"))
+	return str(npc_schedule_entry(npc_id).get("location", "未知区域"))
+
+
+func npc_is_available(npc_id: String) -> bool:
+	return bool(npc_schedule_entry(npc_id).get("available", false))
+
+
+func npc_map_entries() -> Array:
+	var result: Array = []
+	for npc_id in NpcCatalog.core_ids():
+		if not bool(known_npcs.get(npc_id, false)):
+			continue
+		var profile := npc_profile(npc_id)
+		var schedule := npc_schedule_entry(npc_id)
+		result.append({
+			"id": npc_id,
+			"name": str(profile.get("name", npc_id)),
+			"color": Color(str(profile.get("color", "ffffff"))),
+			"area": str(schedule.get("area", "")),
+			"location": str(schedule.get("location", "未知区域")),
+			"activity": str(schedule.get("activity", "")),
+			"position": schedule.get("position", Vector2.ZERO),
+			"available": bool(schedule.get("available", false)),
+			"substitute": str(schedule.get("substitute", ""))
+		})
+	return result
+
+
+func environment_resident_entries() -> Array:
+	var result: Array = []
+	for raw_profile in ENVIRONMENT_RESIDENTS:
+		var profile: Dictionary = raw_profile
+		var resident_id := str(profile.get("id", ""))
+		var schedule := NpcCatalog.resident_schedule(resident_id, phase_name())
+		result.append({
+			"id": resident_id,
+			"name": str(profile.get("name", resident_id)),
+			"role": str(profile.get("role", "岛民")),
+			"color": Color(str(profile.get("color", "9bb8b8"))),
+			"dialogue": str(profile.get("dialogue", "")),
+			"area": str(schedule.get("area", "")),
+			"location": str(schedule.get("location", "")),
+			"position": schedule.get("position", Vector2.ZERO),
+			"available": bool(schedule.get("available", true))
+		})
+	return result
 
 
 func is_discovered(item_id: String) -> bool:
@@ -732,6 +899,18 @@ func discover_item(item_id: String, _source: String = "world") -> bool:
 	if not ITEMS.has(item_id) or is_discovered(item_id):
 		return false
 	discovered[item_id] = true
+	var tier := item_tier(item_id)
+	if tier >= 2:
+		for npc_id in ["granny", "shopkeeper", "mia"]:
+			add_npc_memory(npc_id, {
+				"memory_id": "discovered_%s" % item_id,
+				"type": "synthesis_discovery",
+				"importance": clampi(tier, 2, 5),
+				"persistent": tier >= 4,
+				"summary": "你首次发现了%d阶万物“%s”。" % [tier, item_name(item_id)],
+				"relationship_delta": 0,
+				"effects": {"dialogue_warmth": 1, "private_topic_access": 1 if tier >= 4 else 0}
+			})
 	changed.emit()
 	return true
 
@@ -1263,6 +1442,24 @@ func finish_dive(forced_surface: bool = false) -> Dictionary:
 			}
 			if str(candidate["size"]) == "纪录级":
 				new_records.append(FishCatalog.species_name(species_id))
+	if not first_discoveries.is_empty():
+		add_npc_memory("mia", {
+			"memory_id": "marine_discovery_day_%d" % day,
+			"type": "marine_discovery",
+			"importance": 3,
+			"summary": "你在海岸留下了新的海生记录：%s。" % "、".join(first_discoveries),
+			"relationship_delta": 0,
+			"effects": {"dialogue_warmth": 1}
+		})
+	if not new_records.is_empty():
+		add_npc_memory("mia", {
+			"memory_id": "record_fish_day_%d" % day,
+			"type": "record_fish",
+			"importance": 4,
+			"summary": "你捕获了纪录级鱼获：%s。" % "、".join(new_records),
+			"relationship_delta": 0,
+			"effects": {"private_topic_access": 1, "dialogue_warmth": 1}
+		})
 	dive_windows_remaining = maxi(0, dive_windows_remaining - 1)
 	fishing_attempts_today = DAILY_FISHING_LIMIT - dive_windows_remaining
 	dive_sequence += 1
@@ -1612,34 +1809,152 @@ func turn_in_fish_order(order_id: String) -> Dictionary:
 
 
 func activate_aqiu_request() -> void:
-	if aqiu_request_done:
-		return
-	aqiu_request_active = true
-	changed.emit()
+	accept_npc_request("aqiu")
 
 
 func turn_in_aqiu_request() -> Dictionary:
 	if aqiu_request_done:
 		return {"ok": false, "text": "阿葵已经记下你发现的水罐补水方法。"}
-	if not is_discovered("water_jar"):
-		activate_aqiu_request()
+	if str(npc_request_states.get("aqiu", {}).get("state", "available")) == "available":
+		accept_npc_request("aqiu")
+	if not _npc_request_condition_met("discover_water_jar"):
 		return {"ok": false, "text": "阿葵想为逐风兽准备稳定的补水器具。陶器已经能固定形状，再想想什么能赋予它用途。"}
-	aqiu_request_done = true
-	aqiu_request_active = false
-	cash += 80
-	_record_wealth("完成阿葵委托")
-	relationships["aqiu"] = int(relationships.get("aqiu", 0)) + 8
-	add_memory("aqiu", "你把水罐的补水方法告诉了阿葵。")
-	changed.emit()
-	return {"ok": true, "text": "阿葵记下水罐的补水方法，支付80金贝，并告诉你云鳍今天状态不错。水罐仍永久保留在图鉴中。"}
+	var result := turn_in_npc_request("aqiu")
+	if bool(result.get("ok", false)):
+		result["text"] = "阿葵记下水罐的补水方法，支付80金贝，并告诉你云鳍今天状态不错。水罐仍永久保留在图鉴中。"
+	return result
 
 
 func add_memory(npc_id: String, text: String) -> void:
-	var list: Array = memories.get(npc_id, [])
-	list.push_front(text)
-	while list.size() > 5:
-		list.pop_back()
-	memories[npc_id] = list
+	add_npc_memory(npc_id, {
+		"memory_id": "legacy_%s_%d" % [npc_id, int(Time.get_ticks_usec())],
+		"type": "event",
+		"importance": 2,
+		"summary": text,
+		"relationship_delta": 0,
+		"effects": {}
+	})
+
+
+func adjust_relationship(npc_id: String, amount: int) -> int:
+	if not NPCS.has(npc_id):
+		return 0
+	relationships[npc_id] = clampi(int(relationships.get(npc_id, 0)) + amount, -100, 100)
+	return int(relationships[npc_id])
+
+
+func add_npc_memory(npc_id: String, raw_memory: Dictionary) -> Dictionary:
+	if not NPCS.has(npc_id):
+		return {}
+	if not memories.has(npc_id) or not memories[npc_id] is Dictionary:
+		memories[npc_id] = {"recent": [], "long": []}
+	var store: Dictionary = memories[npc_id]
+	var recent: Array = store.get("recent", [])
+	var memory_id := str(raw_memory.get("memory_id", ""))
+	if memory_id.is_empty():
+		memory_id = "%s_%s_%d_%d" % [npc_id, str(raw_memory.get("type", "event")), day, tide]
+	var existing_index := -1
+	for index in range(recent.size()):
+		if str(recent[index].get("memory_id", "")) == memory_id:
+			existing_index = index
+			break
+	var is_new := existing_index < 0
+	var record: Dictionary = raw_memory.duplicate(true)
+	if not is_new:
+		var existing: Dictionary = recent[existing_index]
+		record["occurrences"] = int(existing.get("occurrences", 1)) + 1
+		record["importance"] = maxi(int(existing.get("importance", 1)), int(record.get("importance", 1)))
+		if str(record.get("summary", "")).is_empty():
+			record["summary"] = str(existing.get("summary", ""))
+		if not record.has("effects"):
+			record["effects"] = existing.get("effects", {}).duplicate(true)
+		recent.remove_at(existing_index)
+	else:
+		record["occurrences"] = maxi(1, int(record.get("occurrences", 1)))
+	record["memory_id"] = memory_id
+	record["type"] = str(record.get("type", "event"))
+	record["importance"] = clampi(int(record.get("importance", 1)), 1, 5)
+	record["created_day"] = day
+	record["created_tide"] = tide
+	record["summary"] = str(record.get("summary", "发生了一件被记住的事。"))
+	record["relationship_delta"] = int(record.get("relationship_delta", 0))
+	if not record.get("effects", {}) is Dictionary:
+		record["effects"] = {}
+	recent.push_front(record)
+	var reward_key := "%s:%s" % [npc_id, memory_id]
+	if int(record["relationship_delta"]) != 0 and not bool(npc_memory_rewarded.get(reward_key, false)):
+		adjust_relationship(npc_id, int(record["relationship_delta"]))
+		npc_memory_rewarded[reward_key] = true
+	var should_consolidate := bool(record.get("persistent", false)) or int(record["importance"]) >= 4 or int(record["occurrences"]) >= 2
+	if should_consolidate:
+		_upsert_long_memory(store, record)
+	while recent.size() > 5:
+		var remove_index := recent.size() - 1
+		var lowest_importance := int(recent[remove_index].get("importance", 1))
+		for index in range(recent.size() - 2, -1, -1):
+			var importance := int(recent[index].get("importance", 1))
+			if importance < lowest_importance:
+				lowest_importance = importance
+				remove_index = index
+		recent.remove_at(remove_index)
+	store["recent"] = recent
+	memories[npc_id] = store
+	return record.duplicate(true)
+
+
+func _upsert_long_memory(store: Dictionary, record: Dictionary) -> void:
+	var long_term: Array = store.get("long", [])
+	var existing_index := -1
+	for index in range(long_term.size()):
+		if str(long_term[index].get("memory_id", "")) == str(record.get("memory_id", "")):
+			existing_index = index
+			break
+	var consolidated := record.duplicate(true)
+	consolidated["consolidated_day"] = day
+	consolidated["consolidated_tide"] = tide
+	if existing_index >= 0:
+		long_term[existing_index] = consolidated
+	else:
+		long_term.append(consolidated)
+	long_term.sort_custom(func(a, b):
+		var priority_a := int(a.get("importance", 1)) * 10 + mini(9, int(a.get("occurrences", 1)))
+		var priority_b := int(b.get("importance", 1)) * 10 + mini(9, int(b.get("occurrences", 1)))
+		if priority_a != priority_b:
+			return priority_a > priority_b
+		return int(a.get("consolidated_day", 0)) > int(b.get("consolidated_day", 0))
+	)
+	if long_term.size() > 2:
+		long_term.resize(2)
+	store["long"] = long_term
+
+
+func npc_recent_memories(npc_id: String) -> Array:
+	var store = memories.get(npc_id, {})
+	return store.get("recent", []).duplicate(true) if store is Dictionary else []
+
+
+func npc_long_memories(npc_id: String) -> Array:
+	var store = memories.get(npc_id, {})
+	return store.get("long", []).duplicate(true) if store is Dictionary else []
+
+
+func npc_memory_effect(npc_id: String, effect_key: String) -> int:
+	var total := 0
+	var long_ids := {}
+	for raw_memory in npc_long_memories(npc_id):
+		var memory: Dictionary = raw_memory
+		long_ids[str(memory.get("memory_id", ""))] = true
+		var effects = memory.get("effects", {})
+		if effects is Dictionary:
+			total += int(effects.get(effect_key, 0))
+	for raw_memory in npc_recent_memories(npc_id):
+		var memory: Dictionary = raw_memory
+		if long_ids.has(str(memory.get("memory_id", ""))):
+			continue
+		var effects = memory.get("effects", {})
+		if effects is Dictionary:
+			total += int(effects.get(effect_key, 0))
+	return clampi(total, -20, 20)
 
 
 func relationship_state(npc_id: String) -> String:
@@ -1651,6 +1966,345 @@ func relationship_state(npc_id: String) -> String:
 	if score < 40:
 		return "熟悉"
 	return "信任"
+
+
+func npc_talk(npc_id: String) -> Dictionary:
+	if not NPCS.has(npc_id):
+		return {"ok": false, "text": "这里没有可以交谈的人。"}
+	meet_npc(npc_id)
+	var profile := npc_profile(npc_id)
+	var dialogue: Array = profile.get("dialogue", [])
+	if dialogue.is_empty():
+		return {"ok": false, "text": "对方暂时没有新的话。"}
+	var count := int(npc_talk_counts.get(npc_id, 0))
+	npc_talk_counts[npc_id] = count + 1
+	var index := posmod(count + day + tide, dialogue.size())
+	var state := relationship_state(npc_id)
+	var parts: Array[String] = []
+	if state != "陌生" and profile.get("reactions", {}).has(state):
+		parts.append(str(profile["reactions"][state]))
+	parts.append(str(dialogue[index]))
+	var recent := npc_recent_memories(npc_id)
+	if not recent.is_empty() and count % 3 == 1:
+		parts.append("对方还记得：%s" % str(recent[0].get("summary", "")))
+	changed.emit()
+	return {"ok": true, "text": "\n\n".join(parts), "state": state, "repeatable": true}
+
+
+func npc_topics(npc_id: String) -> Array:
+	if not NPCS.has(npc_id):
+		return []
+	var profile := npc_profile(npc_id)
+	var result: Array = []
+	var private_access := relationship_state(npc_id) == "信任" or npc_memory_effect(npc_id, "private_topic_access") > 0
+	for raw_topic in profile.get("topics", []):
+		var topic: Dictionary = raw_topic.duplicate(true)
+		if bool(topic.get("private", false)) and not private_access:
+			continue
+		var read_key := _npc_topic_read_key(npc_id, str(topic.get("id", "")))
+		topic["read"] = bool(npc_topic_reads.get(read_key, false))
+		result.append(topic)
+	return result
+
+
+func _npc_topic_read_key(npc_id: String, topic_id: String) -> String:
+	return "%s:%s:%d:%s" % [npc_id, topic_id, day, phase_name()]
+
+
+func npc_ask(npc_id: String, topic_id: String) -> Dictionary:
+	var selected: Dictionary = {}
+	for raw_topic in npc_topics(npc_id):
+		var topic: Dictionary = raw_topic
+		if str(topic.get("id", "")) == topic_id:
+			selected = topic
+			break
+	if selected.is_empty():
+		return {"ok": false, "text": "这条话题现在还没有开放。"}
+	var read_key := _npc_topic_read_key(npc_id, topic_id)
+	var repeated := bool(npc_topic_reads.get(read_key, false))
+	npc_topic_reads[read_key] = true
+	changed.emit()
+	return {
+		"ok": true,
+		"text": _npc_topic_text(npc_id, topic_id),
+		"type": str(selected.get("type", "人物观点")),
+		"source": str(selected.get("source", "对方本人")),
+		"generated_at": "第%d天%s" % [day, phase_name()],
+		"valid_until": _npc_topic_valid_until(topic_id),
+		"repeat": repeated
+	}
+
+
+func _npc_topic_valid_until(topic_id: String) -> String:
+	if topic_id in ["synthesis_direction", "table_observation", "race_schedule", "beast_condition", "public_report", "fish_market_observation", "research_market"]:
+		return "第%d天%s结束" % [day, phase_name()]
+	return "长期有效"
+
+
+func _npc_topic_text(npc_id: String, topic_id: String) -> String:
+	match topic_id:
+		"synthesis_basics":
+			return "已经发现的万物会永久留在图鉴中，可以在造化盆左右两侧反复使用。新组合只支付实验费，不消耗万物。"
+		"synthesis_direction":
+			return "你目前发现了%d/%d项万物，眼下有%d条由已知万物组成、但尚未尝试的关系。" % [discovered_item_ids().size(), ITEMS.size(), count_untried_visible_pairs()]
+		"tower_memory":
+			return "“塔并不收藏所有正确答案。它收藏岛民愿意公开验证、也允许后来者改正的关系。”"
+		"poker_public_rules":
+			return "命运牌会由六席轮换司契位与盲注，每席只补齐本轮差额；退契者不再行动，主池、边池、未跟注返还和服务费必须守恒。"
+		"table_observation":
+			var courage_effect := npc_memory_effect("old_joe", "poker_courage")
+			return "老乔认为今天桌面%s。他强调这只是对行动节奏的观察，不代表任何人的隐藏命牌。" % ("比平常更敢施压" if courage_effect > 0 else ("比平常更谨慎" if courage_effect < 0 else "还没有形成明显倾向"))
+		"joe_old_loss":
+			return "“我输得最重的那次，牌并不差。坏的是我早把离桌线说出口，后来又亲手越过去。”"
+		"race_schedule":
+			var next_tide := 0
+			for scheduled_tide in [3, 7, 11, 15]:
+				if scheduled_tide >= tide:
+					next_tide = scheduled_tide
+					break
+			return "今天的公开赛事潮刻为3、7、11、15。%s" % ("下一场在%d/16潮刻。" % next_tide if next_tide > 0 else "今天的常规场已经结束。")
+		"beast_condition":
+			var support_count := npc_memory_effect("aqiu", "race_support")
+			return "阿葵今天没有观察到明显伤病。%s会改变部分逐风兽的发挥区间，但“状态正常”不等于保证名次。她还记得你此前%d点持续观赛与支持记录。" % [weather, maxi(0, support_count)]
+		"rider_pressure":
+			return "“看台希望每一场都有英雄，可骑师更该记得，逐风兽明天还要继续生活。”"
+		"public_report":
+			return "第%d天，天气%s、%s。公开鱼价、赛事与财富资格都以当前时段的公示为准。" % [day, weather, wind_direction]
+		"fish_market_observation":
+			var rows := fish_market_rows()
+			if rows.is_empty():
+				return "蓝鳍鱼铺当前没有可核对的报价记录。"
+			var top: Dictionary = rows[0]
+			return "%s当前报价%d金贝。公开原因：%s。这个报价会在时段刷新时重新计算。" % [str(top.get("name", "鱼获")), int(top.get("quote", 0)), "；".join(top.get("reasons", []))]
+		"mia_unpublished_note":
+			return "“我正在核对财富暴涨与高风险活动之间的关系。现在只有样本，没有结论，所以暂时不会写成头条。”"
+		"wealth_title":
+			var milestone := next_wealth_milestone()
+			if bool(milestone.get("complete", false)):
+				return "你当前是%s，已经达到现有最高公共财富资格。" % wealth_title()
+			return "你当前是%s；距离下一头衔“%s”还差%d金贝净资产。" % [wealth_title(), str(milestone.get("title", "")), int(milestone.get("remaining", 0))]
+		"risk_view":
+			return "“风险不是赔率大不大，而是结果最坏时，你是否仍保有下一次选择。”"
+		"club_invitation":
+			return "“俱乐部会在后期财富系统开放后发出正式邀请。关系只能决定我愿不愿意邀请，不能替你绕过财富资格。”"
+		"shop_services":
+			return "杂货铺目前提供配方方向线索与有限次数的实验折扣。服务不会直接解锁万物，也不会收走永久造物。"
+		"research_market":
+			return "当前仍有%d条可由已知万物直接研究的新关系。阿拓的判断来自本店研究记录，不代表哪条关系最赚钱。" % count_untried_visible_pairs()
+		"shopkeeper_ledger":
+			return "“我见过最贵的错误，是大家都认为别人已经验证过，于是谁也没有亲手验证。”"
+	return "%s暂时只愿意说：这是一条个人判断，不是系统保证。" % str(npc_profile(npc_id).get("name", "对方"))
+
+
+func npc_request_info(npc_id: String) -> Dictionary:
+	var profile := npc_profile(npc_id)
+	var request: Dictionary = profile.get("request", {}).duplicate(true)
+	if request.is_empty():
+		return {}
+	var state_record: Dictionary = npc_request_states.get(npc_id, {"state": "available"})
+	var state := str(state_record.get("state", "available"))
+	if not _npc_request_requirement_met(str(request.get("requires", ""))):
+		state = "locked"
+	request["state"] = state
+	request["condition_met"] = _npc_request_condition_met(str(request.get("condition", "")))
+	request["accepted_day"] = int(state_record.get("accepted_day", 0))
+	request["completed_day"] = int(state_record.get("completed_day", 0))
+	return request
+
+
+func _npc_request_requirement_met(requirement: String) -> bool:
+	if requirement.is_empty():
+		return true
+	if requirement == "complete_poker":
+		return normal_poker_completed
+	return false
+
+
+func _npc_request_condition_met(condition: String) -> bool:
+	match condition:
+		"discover_steam":
+			return is_discovered("steam")
+		"complete_poker":
+			return normal_poker_completed
+		"discover_water_jar":
+			return is_discovered("water_jar")
+		"record_fish":
+			return not marine_size_records.is_empty()
+		"keep_reserve":
+			return account_wealth() >= 500 and cash >= suggested_reserve()
+		"discover_tier_two":
+			for item_id in discovered_item_ids():
+				if item_tier(item_id) == 2:
+					return true
+	return false
+
+
+func accept_npc_request(npc_id: String) -> Dictionary:
+	var info := npc_request_info(npc_id)
+	if info.is_empty():
+		return {"ok": false, "text": "对方现在没有可接受的委托。"}
+	var state := str(info.get("state", "available"))
+	if state == "locked":
+		return {"ok": false, "text": "这项委托还没有出现。先完成相关人物引导。"}
+	if state == "completed":
+		return {"ok": false, "text": "这项委托已经完成。"}
+	if state == "active":
+		return {"ok": false, "text": "这项委托已经在进行中。"}
+	npc_request_states[npc_id] = {"state": "active", "accepted_day": day, "completed_day": 0}
+	if npc_id == "aqiu":
+		aqiu_request_active = true
+		aqiu_request_done = false
+	add_npc_memory(npc_id, {
+		"memory_id": "accepted_%s" % str(info.get("id", npc_id)),
+		"type": "request",
+		"importance": 2,
+		"summary": "你接受了委托“%s”。" % str(info.get("title", "人物请求")),
+		"relationship_delta": 0,
+		"effects": {"request_priority": 1}
+	})
+	changed.emit()
+	return {"ok": true, "text": "已接受“%s”。\n目标：%s\n线索：%s" % [str(info.get("title", "人物请求")), str(info.get("objective", "")), str(info.get("hint", ""))]}
+
+
+func turn_in_npc_request(npc_id: String) -> Dictionary:
+	var info := npc_request_info(npc_id)
+	if info.is_empty():
+		return {"ok": false, "text": "对方现在没有可交付的委托。"}
+	var state := str(info.get("state", "available"))
+	if state == "completed":
+		return {"ok": false, "text": "这项委托已经结算，不能重复领取奖励。"}
+	if state != "active":
+		return {"ok": false, "text": "需要先接受这项委托。"}
+	if not bool(info.get("condition_met", false)):
+		return {"ok": false, "text": "目标尚未完成。\n%s\n线索：%s" % [str(info.get("objective", "")), str(info.get("hint", ""))]}
+	var rewards: Dictionary = info.get("rewards", {})
+	var coins := maxi(0, int(rewards.get("coins", 0)))
+	var relationship_delta := int(rewards.get("relationship", 0))
+	var discount_uses := maxi(0, int(rewards.get("discount_uses", 0)))
+	if coins > 0:
+		cash += coins
+		_record_wealth("完成%s委托" % str(npc_profile(npc_id).get("name", "人物")))
+	if discount_uses > 0:
+		synthesis_discount_uses = mini(6, synthesis_discount_uses + discount_uses)
+	npc_request_states[npc_id] = {"state": "completed", "accepted_day": int(info.get("accepted_day", day)), "completed_day": day}
+	if npc_id == "aqiu":
+		aqiu_request_active = false
+		aqiu_request_done = true
+	add_npc_memory(npc_id, {
+		"memory_id": "completed_%s" % str(info.get("id", npc_id)),
+		"type": "request_completed",
+		"importance": 5,
+		"persistent": true,
+		"summary": "你完成了委托“%s”。" % str(info.get("title", "人物请求")),
+		"relationship_delta": relationship_delta,
+		"effects": {"dialogue_warmth": 2, "private_topic_access": 1, "request_priority": 2}
+	})
+	changed.emit()
+	var reward_parts: Array[String] = []
+	if coins > 0:
+		reward_parts.append("%d金贝" % coins)
+	if relationship_delta != 0:
+		reward_parts.append("人物关系发生变化")
+	if discount_uses > 0:
+		reward_parts.append("%d次实验折扣" % discount_uses)
+	return {"ok": true, "text": "委托“%s”已经完成。获得：%s。" % [str(info.get("title", "人物请求")), "、".join(reward_parts) if not reward_parts.is_empty() else "一段被长期记住的经历"], "rewards": rewards.duplicate(true)}
+
+
+func share_creation_with_npc(npc_id: String, item_id: String) -> Dictionary:
+	if not NPCS.has(npc_id) or not is_discovered(item_id):
+		return {"ok": false, "text": "只能分享已经永久发现的万物。"}
+	var share_key := "%s:%s" % [npc_id, item_id]
+	if bool(npc_shared_creations.get(share_key, false)):
+		return {"ok": false, "repeat": true, "text": "%s已经听你讲过%s的方法；重复分享不会再次改变关系。" % [str(npc_profile(npc_id).get("name", "对方")), item_name(item_id)]}
+	npc_shared_creations[share_key] = true
+	var profile := npc_profile(npc_id)
+	var interests: Array = profile.get("share_interest", [])
+	var category := str(ITEMS.get(item_id, {}).get("category", ""))
+	var relevant := interests.has(category)
+	add_npc_memory(npc_id, {
+		"memory_id": "shared_creation_%s" % item_id,
+		"type": "shared_creation",
+		"importance": 3 if relevant else 2,
+		"summary": "你向%s分享了%s的形成方法。" % [str(profile.get("name", "对方")), item_name(item_id)],
+		"relationship_delta": 2 if relevant else 0,
+		"effects": {"dialogue_warmth": 1 if relevant else 0}
+	})
+	changed.emit()
+	return {"ok": true, "text": "%s认真看过%s。%s万物仍永久保留在图鉴中。" % [str(profile.get("name", "对方")), item_name(item_id), "这正合对方的研究方向；" if relevant else "对方记下了你的方法；"], "relevant": relevant}
+
+
+func share_record_fish_with_npc(npc_id: String, species_id: String) -> Dictionary:
+	if not NPCS.has(npc_id) or not marine_size_records.has(species_id):
+		return {"ok": false, "text": "这项海生尺寸纪录尚未建立。"}
+	var share_key := "%s:%s" % [npc_id, species_id]
+	if bool(npc_shared_fish.get(share_key, false)):
+		return {"ok": false, "repeat": true, "text": "这项纪录已经展示过，重复查看不会再次改变关系。"}
+	npc_shared_fish[share_key] = true
+	var relevant := npc_id in ["mia", "aqiu"]
+	var fish_name := FishCatalog.species_name(species_id)
+	var size_record: Dictionary = marine_size_records.get(species_id, {})
+	var size_label := str(size_record.get("size", "标准"))
+	add_npc_memory(npc_id, {
+		"memory_id": "shared_fish_%s" % species_id,
+		"type": "record_fish",
+		"importance": 3,
+		"summary": "你展示了%s级的%s尺寸纪录。" % [size_label, fish_name],
+		"relationship_delta": 2 if relevant else 0,
+		"effects": {"dialogue_warmth": 1, "race_support": 1 if npc_id == "aqiu" else 0}
+	})
+	changed.emit()
+	return {"ok": true, "text": "%s查看了%s级的%s纪录。展示纪录不会移除鱼获。" % [str(npc_profile(npc_id).get("name", "对方")), size_label, fish_name]}
+
+
+func npc_deep_talk(npc_id: String) -> Dictionary:
+	if relationship_state(npc_id) not in ["熟悉", "信任"]:
+		return {"ok": false, "text": "关系达到熟悉后，才会出现可以深入谈论的个人话题。"}
+	if int(npc_deep_talk_days.get(npc_id, 0)) == day:
+		return {"ok": false, "text": "今天已经深入谈过一次。普通交谈仍可继续，但不会重复结算关系或时间事件。"}
+	if day_end_pending:
+		return {"ok": false, "text": "夜已经停驻，先回小屋完成日终。"}
+	var state := relationship_state(npc_id)
+	var profile := npc_profile(npc_id)
+	var deep_text := str(profile.get("deep_talk", {}).get(state, "你们谈了一段没有公开记录的往事。"))
+	var time_cost := 1.0 if state == "信任" else 0.5
+	npc_deep_talk_days[npc_id] = day
+	add_npc_memory(npc_id, {
+		"memory_id": "deep_talk_day_%d" % day,
+		"type": "deep_talk",
+		"importance": 3,
+		"summary": "你们在第%d天进行了一次深入交谈。" % day,
+		"relationship_delta": 1,
+		"effects": {"dialogue_warmth": 1}
+	})
+	set_time_pause("npc_deep_talk", true, TIME_STATE_ACTIVITY)
+	advance_time_fraction(time_cost, "与%s深入交谈" % str(profile.get("name", "人物")))
+	set_time_pause("npc_deep_talk", false)
+	changed.emit()
+	return {"ok": true, "text": deep_text, "time_cost": time_cost}
+
+
+func _record_poker_social_memories(outcome: String, bank_net: int) -> void:
+	var summary := ""
+	var courage_effect := 0
+	match outcome:
+		"win", "tie":
+			summary = "你在最近一手命运牌会中获胜或参与平分，本手净变化%s金贝。" % _signed_number(bank_net)
+			courage_effect = -1
+		"fold":
+			summary = "你在最近一手命运牌会中选择退契，本手净变化%s金贝。" % _signed_number(bank_net)
+			courage_effect = 1
+		_:
+			summary = "你在最近一手命运牌会中未获胜，本手净变化%s金贝。" % _signed_number(bank_net)
+			courage_effect = 1
+	for npc_id in ["old_joe", "shopkeeper", "mia", "granny"]:
+		add_npc_memory(npc_id, {
+			"memory_id": "poker_pattern_%s" % outcome,
+			"type": "poker",
+			"importance": 3,
+			"summary": summary,
+			"relationship_delta": 0,
+			"effects": {"poker_courage": courage_effect}
+		})
 
 
 func race_aids_available() -> Array[String]:
@@ -1827,6 +2481,15 @@ func run_race(beast_index: int, ticket_type: String, requested_bet: int, aid_id:
 	cash += payout
 	advance_time(1)
 	_record_wealth("逐风竞速 · %s" % ("命中" if won else "未中"))
+	var selected_beast_id := str(RACE_BEASTS[beast_index]["id"])
+	add_npc_memory("aqiu", {
+		"memory_id": "supported_%s" % selected_beast_id,
+		"type": "race_support",
+		"importance": 3 if selected_beast_id == "cloudfin" else 2,
+		"summary": "你在逐风竞速中选择支持%s，结果为第%d名。" % [str(RACE_BEASTS[beast_index]["name"]), place],
+		"relationship_delta": 2 if selected_beast_id == "cloudfin" else 0,
+		"effects": {"race_support": 2 if selected_beast_id == "cloudfin" else 1, "dialogue_warmth": 1}
+	})
 	changed.emit()
 	return {
 		"ok": true,
@@ -2265,7 +2928,9 @@ func _poker_npc_action(seat_index: int) -> Dictionary:
 	var pot_odds := float(to_call) / maxf(1.0, float(pot_after_call))
 	var position_bonus := 0.04 if posmod(seat_index - int(poker["dealer_seat"]), 6) >= 4 else 0.0
 	var style_courage := 0.09 if style == "潮汐型" else (-0.07 if style == "礁石型" else 0.0)
-	var courage := strength + style_courage + position_bonus
+	var npc_id := str(ORACLE_NPC_IDS[npc_index])
+	var remembered_courage := float(npc_memory_effect(npc_id, "poker_courage")) * 0.01 if NPCS.has(npc_id) else 0.0
+	var courage := strength + style_courage + position_bonus + remembered_courage
 	if to_call > 0:
 		var is_opening_blind_call := int(poker.get("stage", 0)) == 0 and int(poker.get("current_bet", 0)) == int(poker.get("big_blind", 2)) and to_call <= int(poker.get("big_blind", 2))
 		if is_opening_blind_call:
@@ -2273,7 +2938,7 @@ func _poker_npc_action(seat_index: int) -> Dictionary:
 			var position := posmod(seat_index - int(poker["dealer_seat"]), 6)
 			var position_adjust := 0.06 if position == 3 else (0.02 if position == 4 else (-0.04 if position in [0, 5] else 0.03))
 			var hand_adjust := clampf((0.29 - strength) * 0.55, -0.10, 0.10)
-			var opening_fold_chance := clampf(base_fold + position_adjust + hand_adjust, 0.08, 0.48)
+			var opening_fold_chance := clampf(base_fold + position_adjust + hand_adjust - remembered_courage, 0.08, 0.48)
 			if rng.randf() < opening_fold_chance:
 				return _poker_apply_action(seat_index, "fold")
 		else:
@@ -2510,6 +3175,8 @@ func _finish_poker_state_machine(reason: String, scores: Dictionary) -> Dictiona
 	poker["outcome_reason"] = reason
 	poker["stage"] = 4
 	poker["completed"] = true
+	if not poker_session_tutorial:
+		normal_poker_completed = true
 	poker_completed = true
 	poker["npc_left_names"] = left_names
 	poker["npc_wallets_after"] = poker_npc_wallets.duplicate()
@@ -2558,7 +3225,7 @@ func _finish_poker_state_machine(reason: String, scores: Dictionary) -> Dictiona
 	poker["session_end_reason"] = poker_session_end_reason if not session_reason.is_empty() else ""
 	var winners_text := "、".join(winner_names) if not winner_names.is_empty() else "无人"
 	poker["result"] = "%s。赢家：%s；全桌投入%d，服务费%d，未跟注返还%d；你本手%s金贝，当前%s%d金贝。" % [outcome_label, winners_text, committed_total, int(pot_result["service_fee"]), int(refunds[0]), _signed_number(bank_net), "教学额度" if poker_session_tutorial and not poker_tutorial_settled else "持有", poker_player_available() if poker_session_tutorial and not poker_tutorial_settled else cash]
-	add_memory("old_joe", "你在椰影茶摊完成了一手水火占卜牌会。")
+	_record_poker_social_memories(outcome, bank_net)
 	var end_record := {"hand_id": str(poker.get("hand_id", "")), "completed_at": Time.get_datetime_string_from_system(), "day_after": day, "tide_after": tide, "outcome": outcome, "outcome_label": outcome_label, "winner_names": winner_names.duplicate(), "session_id": poker_session_id, "session_hand": poker_session_hands, "npc_wallets_after": poker_npc_wallets.duplicate(), "npc_present_after": poker_npc_present.duplicate(), "player_hand": _oracle_cards_for_record(poker["player_hand"]), "community": _oracle_cards_for_record(poker["community"]), "player_reading": poker.get("player_reading", {}).duplicate(true), "final_readings": poker["final_readings"].duplicate(true), "opponents": _oracle_opponents_for_record(true), "settlement": poker["settlement"].duplicate(true), "action_log": poker["action_log"].duplicate(), "result": str(poker["result"])}
 	recent_oracle_records.push_front(end_record)
 	if recent_oracle_records.size() > 20:

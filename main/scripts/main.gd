@@ -8,6 +8,7 @@ const DiveTableScript = preload("res://scripts/dive_table.gd")
 const WealthChartScript = preload("res://scripts/wealth_chart.gd")
 const WorldLayoutScript = preload("res://scripts/world_layout.gd")
 const MapOverviewScript = preload("res://scripts/map_overview.gd")
+const NpcCatalogScript = preload("res://scripts/npc_catalog.gd")
 const PixelCharacterScene = preload("res://scenes/components/pixel_character_animator.tscn")
 const IslandGroundMap = preload("res://assets/art/environments/world_map_v2/island_ground_map_v2.png")
 const SynthesisCollectionAtlas = preload("res://assets/art/synthesis_collection_atlas_v1.png")
@@ -25,11 +26,14 @@ var game
 var markers: Array[Node2D] = []
 var marker_by_id := {}
 var npc_visual_by_id := {}
+var resident_visual_by_id := {}
+var resident_visuals_root: Node2D
 var nearest_marker: Node2D
 var discovered_areas := {"漂流湾": true}
 var current_area := "漂流湾"
 var clock_hud_elapsed: float = 0.0
 var day_end_notice_day: int = 0
+var last_npc_phase: String = ""
 
 var ui_root: Control
 var hud_label: Label
@@ -56,9 +60,11 @@ func _ready() -> void:
 	game = GameStateScript.new()
 	game.changed.connect(_refresh_hud)
 	game.notice.connect(_show_toast)
+	game.time_boundary.connect(_on_time_boundary)
 	_build_world_collisions()
 	_build_markers()
 	_build_npc_visuals()
+	_apply_npc_schedule()
 	_build_ui()
 	player.interact_requested.connect(_interact)
 	player.inventory_requested.connect(_open_collection)
@@ -99,12 +105,8 @@ func _process(delta: float) -> void:
 		_show_toast("夜深了，世界时间已经停驻。回漂流小屋查看结算并休息。")
 	_update_area_discovery()
 	_update_nearest_marker()
-	var milo = marker_by_id.get("milo")
-	if milo != null:
-		milo.visible = game.poker_completed or game.phase_name() == "夜晚"
-	var milo_visual = npc_visual_by_id.get("milo")
-	if milo_visual != null:
-		milo_visual.visible = game.poker_completed or game.phase_name() == "夜晚"
+	if last_npc_phase != game.phase_name():
+		_apply_npc_schedule()
 
 
 func _notification(what: int) -> void:
@@ -155,6 +157,14 @@ func _build_markers() -> void:
 			definition["position"],
 			definition["color"]
 		)
+	for raw_profile in game.ENVIRONMENT_RESIDENTS:
+		var profile: Dictionary = raw_profile
+		_add_marker(
+			str(profile["id"]),
+			str(profile["name"]),
+			Vector2.ZERO,
+			Color(str(profile.get("color", "9bb8b8")))
+		)
 
 
 func _build_npc_visuals() -> void:
@@ -172,6 +182,64 @@ func _build_npc_visuals() -> void:
 		holder.add_child(animator)
 		npc_visuals_root.add_child(holder)
 		npc_visual_by_id[character_id] = holder
+	resident_visuals_root = Node2D.new()
+	resident_visuals_root.name = "ResidentVisuals"
+	add_child(resident_visuals_root)
+	for raw_profile in game.ENVIRONMENT_RESIDENTS:
+		var profile: Dictionary = raw_profile
+		var holder := Node2D.new()
+		var resident_id := str(profile["id"])
+		holder.name = resident_id
+		var shadow := Polygon2D.new()
+		shadow.polygon = PackedVector2Array([Vector2(-13, 13), Vector2(13, 13), Vector2(9, 18), Vector2(-9, 18)])
+		shadow.color = Color("07171b88")
+		holder.add_child(shadow)
+		var body := Polygon2D.new()
+		body.polygon = PackedVector2Array([Vector2(0, -22), Vector2(13, -4), Vector2(10, 16), Vector2(-10, 16), Vector2(-13, -4)])
+		body.color = Color(str(profile.get("color", "9bb8b8")))
+		holder.add_child(body)
+		var face := Polygon2D.new()
+		face.polygon = PackedVector2Array([Vector2(-7, -20), Vector2(7, -20), Vector2(9, -9), Vector2(0, -4), Vector2(-9, -9)])
+		face.color = Color("e8c59d")
+		holder.add_child(face)
+		resident_visuals_root.add_child(holder)
+		resident_visual_by_id[resident_id] = holder
+
+
+func _on_time_boundary(kind: String, _data: Dictionary) -> void:
+	if kind in ["phase", "day_end"]:
+		_apply_npc_schedule()
+	if kind == "phase":
+		_show_toast("进入%s：人物日程、鱼市报价与公开活动已经刷新。" % game.phase_name())
+
+
+func _apply_npc_schedule() -> void:
+	if game == null:
+		return
+	last_npc_phase = game.phase_name()
+	for npc_id in NpcCatalogScript.core_ids():
+		var schedule: Dictionary = game.npc_schedule_entry(npc_id)
+		var available := bool(schedule.get("available", false))
+		var marker = marker_by_id.get(npc_id)
+		if marker != null:
+			marker.position = schedule.get("position", marker.position)
+			marker.visible = available
+		var visual = npc_visual_by_id.get(npc_id)
+		if visual != null:
+			visual.position = schedule.get("visual_position", schedule.get("position", visual.position))
+			visual.visible = available
+	for raw_entry in game.environment_resident_entries():
+		var entry: Dictionary = raw_entry
+		var resident_id := str(entry["id"])
+		var available := bool(entry.get("available", false))
+		var marker = marker_by_id.get(resident_id)
+		if marker != null:
+			marker.position = entry.get("position", marker.position)
+			marker.visible = available
+		var visual = resident_visual_by_id.get(resident_id)
+		if visual != null:
+			visual.position = entry.get("position", visual.position) + Vector2(-20, 22)
+			visual.visible = available
 
 
 func _build_world_collisions() -> void:
@@ -471,15 +539,15 @@ func _interact() -> void:
 		"fish": _open_dive("prep")
 		"fish_market": _open_dive("market")
 		"basin": _open_synthesis()
-		"granny": _open_granny()
-		"shop", "shopkeeper": _open_shop()
-		"tea", "old_joe": _open_poker()
+		"granny", "old_joe", "aqiu", "mia", "milo", "shopkeeper": _open_npc(nearest_marker.interaction_id)
+		"shop": _open_shop()
+		"tea": _open_poker()
 		"news": _open_news()
-		"mia": _open_mia()
 		"tower": _open_tower()
 		"race": _open_race()
-		"aqiu": _open_aqiu()
-		"milo": _open_milo()
+		_:
+			if str(nearest_marker.interaction_id).begins_with("resident_"):
+				_open_resident(nearest_marker.interaction_id)
 
 
 func _open_modal(title_value: String) -> void:
@@ -838,6 +906,7 @@ func _apply_loaded_world(world: Dictionary) -> void:
 	current_area = WorldLayoutScript.area_for_position(player.global_position)
 	discovered_areas[current_area] = true
 	day_end_notice_day = game.day if game.day_end_pending else 0
+	_apply_npc_schedule()
 	_refresh_hud()
 
 
@@ -873,6 +942,7 @@ func _open_bed() -> void:
 
 func _sleep() -> void:
 	game.sleep_to_next_day()
+	_apply_npc_schedule()
 	var autosave: Dictionary = game.save_auto_game(_world_save_state())
 	_show_result(
 		"新的一天",
@@ -884,43 +954,296 @@ func _sleep() -> void:
 
 
 func _open_granny() -> void:
-	_open_modal("榕奶奶 · %s" % game.relationship_state("granny"))
-	modal_body.add_child(_make_text("“把两个已经认识的万物放到盆的两边。它们不会消失，留下的是你对关系的理解。”", Color("ffd4df")))
-	modal_body.add_child(_make_text("她建议先让水与土相遇。第一次基础实验需要2金贝，谈话不消耗潮刻。"))
-	modal_body.add_child(_make_button("使用造化盆", _open_synthesis))
+	_open_npc("granny")
 
 
 func _open_aqiu() -> void:
-	var result: Dictionary = game.turn_in_aqiu_request()
-	_open_modal("阿葵 · %s" % game.relationship_state("aqiu"))
-	modal_body.add_child(_make_text(str(result["text"]), Color("c5f5d8")))
-	if not game.aqiu_request_done:
-		modal_body.add_child(_make_button("去造化盆", _travel_to.bind("漂流湾")))
-	else:
-		modal_body.add_child(_make_text("赛事情报：云鳍今天的状态值得留意。"))
+	_open_npc("aqiu")
 
 
 func _open_mia() -> void:
-	_open_modal("米娅 · %s" % game.relationship_state("mia"))
-	modal_body.add_child(_make_text("“岛报只讲公开信息，最终下注还得你自己判断。”", Color("ffe4a5")))
-	modal_body.add_child(_make_text("今日天气：%s。云鳍与雾步的场地适性较高；白浪速度突出但稳定性偏低。" % game.weather))
-	var market_rows: Array = game.fish_market_rows()
-	if not market_rows.is_empty():
-		var top_fish: Dictionary = market_rows[0]
-		modal_body.add_child(_make_text("“鱼铺今天最醒目的报价是%s%d金贝。公开原因是：%s。”" % [str(top_fish["name"]), int(top_fish["quote"]), "；".join(top_fish["reasons"])], Color("bde4d7")))
-	modal_body.add_child(_make_button("查看岛报", _open_news))
+	_open_npc("mia")
 
 
 func _open_milo() -> void:
-	_open_modal("米洛 · %s" % game.relationship_state("milo"))
-	if game.poker_completed:
-		modal_body.add_child(_make_text("“听说你在老乔那桌坐过了。输赢不稀奇，能把本金和现金分开看才像个岛民。”", Color("c7d8ff")))
+	_open_npc("milo")
+
+
+func _open_npc(npc_id: String, notice_text: String = "") -> void:
+	var profile: Dictionary = game.npc_profile(npc_id)
+	if profile.is_empty():
+		_show_result("无人回应", "这里没有可交谈的核心人物。")
+		return
+	game.meet_npc(npc_id)
+	var schedule: Dictionary = game.npc_schedule_entry(npc_id)
+	var npc_name := str(profile.get("name", npc_id))
+	_open_modal("%s · %s" % [npc_name, game.relationship_state(npc_id)])
+	var overview := HBoxContainer.new()
+	overview.add_theme_constant_override("separation", 14)
+	overview.add_child(_npc_portrait(npc_id))
+	var overview_copy := VBoxContainer.new()
+	overview_copy.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	overview_copy.add_theme_constant_override("separation", 7)
+	overview.add_child(overview_copy)
+	overview_copy.add_child(_make_text(str(profile.get("role", "岛民")), Color("f1d687")))
+	overview_copy.add_child(_make_text("当前位置：%s\n正在：%s" % [
+		str(schedule.get("location", "未知区域")),
+		str(schedule.get("activity", ""))
+	], Color("c8dedb")))
+	var relationship_explanations := {
+		"疏远": "减少私人话题与邀请，但公共服务照常开放。",
+		"陌生": "提供公共信息与必要功能。",
+		"熟悉": "开放普通委托、背景线索与深入交谈。",
+		"信任": "开放私人话题、长期合作与更完整的个人信息。"
+	}
+	var relationship_state: String = game.relationship_state(npc_id)
+	overview_copy.add_child(_make_text("关系：%s · %s" % [relationship_state, str(relationship_explanations[relationship_state])], Color("9edbb6")))
+	var dialogue: Array = profile.get("dialogue", [])
+	if not dialogue.is_empty():
+		var thought_index := posmod(game.day + game.tide, dialogue.size())
+		overview_copy.add_child(_make_text("此刻的话\n%s" % str(dialogue[thought_index]), Color("f4e2ad")))
+	var current_phase_index := NpcCatalogScript.PHASES.find(game.phase_name())
+	var next_phase := str(NpcCatalogScript.PHASES[(current_phase_index + 1) % NpcCatalogScript.PHASES.size()])
+	var next_schedule: Dictionary = game.npc_schedule_entry(npc_id, next_phase)
+	overview_copy.add_child(_make_text("下一时段：%s · %s" % [next_phase, str(next_schedule.get("location", "未知区域"))], Color("91abad")))
+	modal_body.add_child(overview)
+	if not notice_text.is_empty():
+		var notice_panel := PanelContainer.new()
+		notice_panel.add_theme_stylebox_override("panel", _panel_style(Color("173b3c"), Color("74b09a")))
+		notice_panel.add_child(_make_text(notice_text, Color("d4f4df")))
+		modal_body.add_child(notice_panel)
+	if not bool(schedule.get("available", false)):
+		var substitute := str(schedule.get("substitute", ""))
+		modal_body.add_child(_make_text(
+			"%s当前不在可交谈位置。%s" % [npc_name, ("基础服务由%s继续提供。" % substitute) if not substitute.is_empty() else "可以在地图人物栏查看下一时段的位置。"],
+			Color("aab9ba")
+		))
+		modal_body.add_child(_make_button("查看人物地图", _open_map))
+		_add_npc_service_buttons(npc_id)
+		return
+
+	var memory_lines: Array[String] = []
+	var long_memories: Array = game.npc_long_memories(npc_id)
+	for raw_memory in long_memories:
+		memory_lines.append("长期记忆 · %s" % str(raw_memory.get("summary", "")))
+	var recent_memories: Array = game.npc_recent_memories(npc_id)
+	for index in range(mini(2, recent_memories.size())):
+		memory_lines.append("最近记得 · %s" % str(recent_memories[index].get("summary", "")))
+	if not memory_lines.is_empty():
+		modal_body.add_child(_make_text("\n".join(memory_lines), Color("b8cecc")))
+
+	var actions := GridContainer.new()
+	actions.columns = 3
+	actions.add_theme_constant_override("h_separation", 8)
+	actions.add_theme_constant_override("v_separation", 8)
+	modal_body.add_child(actions)
+	actions.add_child(_make_button("交谈", _npc_talk_action.bind(npc_id)))
+	actions.add_child(_make_button("询问话题", _open_npc_topics.bind(npc_id)))
+	actions.add_child(_make_button("查看委托", _open_npc_request.bind(npc_id)))
+	actions.add_child(_make_button("展示万物 / 鱼获", _open_npc_share.bind(npc_id)))
+	var deep_available: bool = game.relationship_state(npc_id) in ["熟悉", "信任"] and int(game.npc_deep_talk_days.get(npc_id, 0)) != game.day
+	actions.add_child(_make_button("深入交谈 · 0.5—1潮刻", _npc_deep_action.bind(npc_id), not deep_available))
+	actions.add_child(_make_button("在地图上查看", _open_map))
+	_add_npc_service_buttons(npc_id, actions)
+
+
+func _npc_portrait(npc_id: String) -> Control:
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(154, 194)
+	panel.add_theme_stylebox_override("panel", _panel_style(Color("152f37"), Color("6c9791")))
+	var center := CenterContainer.new()
+	panel.add_child(center)
+	var texture: Texture2D
+	for raw_definition in WorldLayoutScript.NPC_VISUALS:
+		var definition: Dictionary = raw_definition
+		if str(definition.get("id", "")) == npc_id:
+			texture = load(str(definition.get("atlas", "")))
+			break
+	if texture == null:
+		center.add_child(_make_text("暂无肖像", Color("83999a")))
+		return panel
+	var frame := AtlasTexture.new()
+	frame.atlas = texture
+	frame.region = Rect2(0, 0, 48, 64)
+	frame.filter_clip = true
+	var art := TextureRect.new()
+	art.texture = frame
+	art.custom_minimum_size = Vector2(132, 176)
+	art.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	art.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	art.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	center.add_child(art)
+	return panel
+
+
+func _add_npc_service_buttons(npc_id: String, target: Control = null) -> void:
+	var parent: Control = modal_body if target == null else target
+	var services: Array = game.npc_profile(npc_id).get("services", [])
+	for raw_service in services:
+		var service := str(raw_service)
+		match service:
+			"synthesis":
+				parent.add_child(_make_button("使用造化盆", _open_synthesis))
+			"poker":
+				parent.add_child(_make_button("进入命运牌会", _open_poker))
+			"race":
+				parent.add_child(_make_button("查看逐风竞速", _open_race))
+			"news":
+				parent.add_child(_make_button("查看《晴潮晨报》", _open_news))
+			"shop":
+				parent.add_child(_make_button("使用研究商店", _open_shop))
+
+
+func _npc_talk_action(npc_id: String) -> void:
+	var result: Dictionary = game.npc_talk(npc_id)
+	_open_npc(npc_id, str(result.get("text", "对方暂时没有新的话。")))
+
+
+func _open_npc_topics(npc_id: String) -> void:
+	var profile: Dictionary = game.npc_profile(npc_id)
+	_open_modal("%s · 可询问话题" % str(profile.get("name", npc_id)))
+	modal_body.add_child(_make_text("公开事实保证当前真实；有来源消息可能不完整；人物观点不保证正确。普通询问不消耗潮刻。", Color("a9c7c4")))
+	var topics: Array = game.npc_topics(npc_id)
+	if topics.is_empty():
+		modal_body.add_child(_make_text("当前没有开放的话题。"))
+	for raw_topic in topics:
+		var topic: Dictionary = raw_topic
+		var read_suffix := " · 本时段已读" if bool(topic.get("read", false)) else ""
+		modal_body.add_child(_make_button(
+			"%s｜%s%s" % [str(topic.get("type", "人物观点")), str(topic.get("label", "话题")), read_suffix],
+			_npc_ask_action.bind(npc_id, str(topic.get("id", "")))
+		))
+	modal_body.add_child(_make_button("返回人物页", _open_npc.bind(npc_id)))
+
+
+func _npc_ask_action(npc_id: String, topic_id: String) -> void:
+	var result: Dictionary = game.npc_ask(npc_id, topic_id)
+	var profile: Dictionary = game.npc_profile(npc_id)
+	_open_modal("%s · 话题记录" % str(profile.get("name", npc_id)))
+	modal_body.add_child(_make_text(str(result.get("text", "这条话题现在没有内容。")), Color("f4e2a9")))
+	if bool(result.get("ok", false)):
+		modal_body.add_child(_make_text("类型：%s\n来源：%s\n生成：%s\n有效期：%s%s" % [
+			str(result.get("type", "")),
+			str(result.get("source", "")),
+			str(result.get("generated_at", "")),
+			str(result.get("valid_until", "")),
+			"\n本时段已读；重复查看不产生新奖励或新线索。" if bool(result.get("repeat", false)) else ""
+		], Color("a9c7c4")))
+	modal_body.add_child(_make_button("返回话题", _open_npc_topics.bind(npc_id)))
+	modal_body.add_child(_make_button("返回人物页", _open_npc.bind(npc_id)))
+
+
+func _open_npc_request(npc_id: String, notice_text: String = "") -> void:
+	var profile: Dictionary = game.npc_profile(npc_id)
+	var request: Dictionary = game.npc_request_info(npc_id)
+	_open_modal("%s · 委托" % str(profile.get("name", npc_id)))
+	if not notice_text.is_empty():
+		modal_body.add_child(_make_text(notice_text, Color("d4f4df")))
+	if request.is_empty():
+		modal_body.add_child(_make_text("当前没有基础委托。"))
 	else:
-		modal_body.add_child(_make_text("米洛通常只在夜晚出现。他让你先去牌桌见识一次。"))
+		var state_labels := {"locked": "尚未出现", "available": "可以接受", "active": "进行中", "completed": "已经完成"}
+		var state := str(request.get("state", "available"))
+		modal_body.add_child(_make_text("%s · %s" % [str(request.get("title", "人物请求")), str(state_labels.get(state, state))], Color("f1d687")))
+		modal_body.add_child(_make_text("目标：%s\n线索：%s" % [str(request.get("objective", "")), str(request.get("hint", ""))]))
+		if state == "available":
+			modal_body.add_child(_make_button("接受委托", _npc_accept_request.bind(npc_id)))
+		elif state == "active":
+			modal_body.add_child(_make_text("目标状态：%s" % ("已经满足，可以交付" if bool(request.get("condition_met", false)) else "尚未满足"), Color("9edbb6") if bool(request.get("condition_met", false)) else Color("d3b58a")))
+			modal_body.add_child(_make_button("尝试交付", _npc_turn_in_request.bind(npc_id)))
+		elif state == "locked":
+			modal_body.add_child(_make_text("先完成与该人物相关的基础引导，委托才会出现。", Color("aab9ba")))
+		elif state == "completed":
+			modal_body.add_child(_make_text("这项委托已经写入人物长期记忆，不能重复领取奖励。", Color("9edbb6")))
+	modal_body.add_child(_make_button("返回人物页", _open_npc.bind(npc_id)))
+
+
+func _npc_accept_request(npc_id: String) -> void:
+	var result: Dictionary = game.accept_npc_request(npc_id)
+	_open_npc_request(npc_id, str(result.get("text", "")))
+
+
+func _npc_turn_in_request(npc_id: String) -> void:
+	var result: Dictionary = game.turn_in_npc_request(npc_id)
+	_open_npc_request(npc_id, str(result.get("text", "")))
+
+
+func _open_npc_share(npc_id: String, notice_text: String = "") -> void:
+	var profile: Dictionary = game.npc_profile(npc_id)
+	_open_modal("%s · 展示与分享" % str(profile.get("name", npc_id)))
+	if not notice_text.is_empty():
+		modal_body.add_child(_make_text(notice_text, Color("d4f4df")))
+	modal_body.add_child(_make_text("分享只读取永久图鉴，不会移除万物。同一人物与同一内容只在首次分享时产生关系或记忆变化。", Color("a9c7c4")))
+	modal_body.add_child(_make_text("永久万物", Color("f1d687")))
+	var item_grid := GridContainer.new()
+	item_grid.columns = 3
+	item_grid.add_theme_constant_override("h_separation", 8)
+	item_grid.add_theme_constant_override("v_separation", 8)
+	modal_body.add_child(item_grid)
+	for item_id in game.discovered_item_ids():
+		var share_key := "%s:%s" % [npc_id, item_id]
+		item_grid.add_child(_make_button(
+			"%d阶 · %s%s" % [game.item_tier(item_id), game.item_name(item_id), " · 已分享" if bool(game.npc_shared_creations.get(share_key, false)) else ""],
+			_npc_share_creation.bind(npc_id, item_id),
+			bool(game.npc_shared_creations.get(share_key, false))
+		))
+	modal_body.add_child(_make_text("海生尺寸纪录", Color("f1d687")))
+	if game.marine_size_records.is_empty():
+		modal_body.add_child(_make_text("尚未建立任何尺寸纪录。"))
+	else:
+		var fish_grid := GridContainer.new()
+		fish_grid.columns = 3
+		fish_grid.add_theme_constant_override("h_separation", 8)
+		fish_grid.add_theme_constant_override("v_separation", 8)
+		modal_body.add_child(fish_grid)
+		for raw_species_id in game.marine_size_records.keys():
+			var species_id := str(raw_species_id)
+			var record: Dictionary = game.marine_size_records[species_id]
+			var share_key := "%s:%s" % [npc_id, species_id]
+			fish_grid.add_child(_make_button(
+				"%s · %s%s" % [str(game.FISH_SPECIES.get(species_id, {}).get("name", species_id)), str(record.get("size", "标准")), " · 已展示" if bool(game.npc_shared_fish.get(share_key, false)) else ""],
+				_npc_share_fish.bind(npc_id, species_id),
+				bool(game.npc_shared_fish.get(share_key, false))
+			))
+	modal_body.add_child(_make_button("返回人物页", _open_npc.bind(npc_id)))
+
+
+func _npc_share_creation(npc_id: String, item_id: String) -> void:
+	var result: Dictionary = game.share_creation_with_npc(npc_id, item_id)
+	_open_npc_share(npc_id, str(result.get("text", "")))
+
+
+func _npc_share_fish(npc_id: String, species_id: String) -> void:
+	var result: Dictionary = game.share_record_fish_with_npc(npc_id, species_id)
+	_open_npc_share(npc_id, str(result.get("text", "")))
+
+
+func _npc_deep_action(npc_id: String) -> void:
+	var result: Dictionary = game.npc_deep_talk(npc_id)
+	var profile: Dictionary = game.npc_profile(npc_id)
+	var time_text: String = "\n\n统一结算：%.1f潮刻。" % float(result.get("time_cost", 0.0)) if bool(result.get("ok", false)) else ""
+	_show_result(
+		"深入交谈 · %s" % str(profile.get("name", npc_id)),
+		"%s%s" % [str(result.get("text", "")), time_text],
+		_open_npc.bind(npc_id)
+	)
+
+
+func _open_resident(resident_id: String) -> void:
+	for raw_entry in game.environment_resident_entries():
+		var entry: Dictionary = raw_entry
+		if str(entry.get("id", "")) != resident_id:
+			continue
+		_open_modal("%s · %s" % [str(entry.get("name", "岛民")), str(entry.get("role", "环境居民"))])
+		modal_body.add_child(_make_text(str(entry.get("dialogue", "")), Color("d6ece3")))
+		modal_body.add_child(_make_text("位置：%s\n这是一条带明确说话人的环境闲谈；不会写入长期记忆，也不会保证未来价格、赛果或隐藏状态。" % str(entry.get("location", "")), Color("a9c7c4")))
+		return
+	_show_result("已经离开", "这名岛民当前不在这里。")
 
 
 func _open_news() -> void:
-	_open_modal("《万物岛报》")
+	_open_modal("《晴潮晨报》")
 	modal_body.add_child(_make_text("第%d日 · %s · %s · 公开赛事与鱼市观察" % [game.day, game.weather, game.wind_direction], Color("ffe7a6")))
 	var fish_rows: Array = game.fish_market_rows()
 	if not fish_rows.is_empty():
@@ -930,6 +1253,18 @@ func _open_news() -> void:
 			modal_body.add_child(_make_text("%s %d金贝 · 需求%d条 · %s" % [str(fish_row["name"]), int(fish_row["quote"]), int(fish_row["demand"]), "；".join(fish_row["reasons"])], Color("bfe2d7")))
 		modal_body.add_child(_make_button("前往蓝鳍鱼铺", _open_dive.bind("market")))
 	modal_body.add_child(HSeparator.new())
+	var known_people: Array = game.npc_map_entries()
+	if not known_people.is_empty():
+		modal_body.add_child(_make_text("人物动态 · 只列已认识人物的公开活动", Color("e8c98a")))
+		for raw_entry in known_people:
+			var entry: Dictionary = raw_entry
+			modal_body.add_child(_make_text("%s：%s · %s%s" % [
+				str(entry.get("name", "人物")),
+				str(entry.get("location", "未知区域")),
+				str(entry.get("activity", "")),
+				"" if bool(entry.get("available", false)) else "（当前不可交谈）"
+			], Color("bcd5d2")))
+		modal_body.add_child(HSeparator.new())
 	modal_body.add_child(_make_text("逐风竞速 · 八兽公开属性", Color("f0d27e")))
 	for index in range(game.RACE_BEASTS.size()):
 		var beast: Dictionary = game.RACE_BEASTS[index]
@@ -990,6 +1325,7 @@ func _enter_poker_tier(buy_in: int, message: String = "") -> void:
 func _on_poker_table_closed() -> void:
 	game.end_poker_session()
 	player.controls_enabled = true
+	_apply_npc_schedule()
 	_refresh_hud()
 
 
@@ -1099,9 +1435,27 @@ func _run_race() -> void:
 func _open_map() -> void:
 	_open_modal("岛屿地图")
 	var overview = MapOverviewScript.new()
-	overview.setup(IslandGroundMap, discovered_areas, player.global_position)
+	var npc_entries: Array = game.npc_map_entries()
+	overview.setup(IslandGroundMap, discovered_areas, player.global_position, npc_entries)
 	modal_body.add_child(overview)
-	modal_body.add_child(_make_text("白圈是当前位置；彩色节点按运行时真实坐标叠在对应建筑入口上。走到区域后即可永久发现，已发现区域之间快速前往消耗0.25潮刻。", Color("bde9f2")))
+	modal_body.add_child(_make_text("白圈是当前位置；地点节点对应真实入口。人物标记只显示已认识NPC所在的区域，不公开其精确脚下坐标。已发现区域之间快速前往消耗0.25潮刻。", Color("bde9f2")))
+	modal_body.add_child(_make_text("当前：第%d天%s · %s · %s" % [game.day, game.phase_name(), game.weather, game.wind_direction], Color("f1d687")))
+	if not npc_entries.is_empty():
+		modal_body.add_child(_make_text("已认识人物", Color("f1d687")))
+		for raw_entry in npc_entries:
+			var entry: Dictionary = raw_entry
+			var status := "%s · %s" % [str(entry.get("location", "未知区域")), str(entry.get("activity", ""))]
+			if not bool(entry.get("available", false)):
+				var substitute := str(entry.get("substitute", ""))
+				status = "%s%s" % [status, (" · 基础服务由%s代班" % substitute) if not substitute.is_empty() else " · 当前不可交谈"]
+			modal_body.add_child(_make_text("• %s：%s" % [str(entry.get("name", "人物")), status], Color("c7dcda") if bool(entry.get("available", false)) else Color("8fa1a3")))
+	var active_requests: Array[String] = []
+	for npc_id in NpcCatalogScript.core_ids():
+		var request: Dictionary = game.npc_request_info(npc_id)
+		if str(request.get("state", "")) == "active":
+			active_requests.append("%s：%s" % [str(game.npc_profile(npc_id).get("name", npc_id)), str(request.get("objective", ""))])
+	if not active_requests.is_empty():
+		modal_body.add_child(_make_text("追踪中的委托\n• %s" % "\n• ".join(active_requests), Color("f0cf82")))
 	for area_name in WorldLayoutScript.AREA_ORDER:
 		var unlocked := discovered_areas.has(area_name)
 		var region: Dictionary = WorldLayoutScript.REGIONS[area_name]
