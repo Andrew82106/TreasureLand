@@ -1,5 +1,10 @@
 extends Node2D
 
+@export var title_screen_enabled: bool = true
+
+var title_save_override_enabled: bool = false
+var title_save_paths_override: Array[String] = []
+
 const GameStateScript = preload("res://scripts/game_state.gd")
 const MarkerScript = preload("res://scripts/interactable.gd")
 const PokerTableScript = preload("res://scripts/poker_table.gd")
@@ -35,6 +40,7 @@ var current_area := "漂流湾"
 var clock_hud_elapsed: float = 0.0
 var day_end_notice_day: int = 0
 var last_npc_phase: String = ""
+var initial_player_position := Vector2.ZERO
 
 var ui_root: Control
 var hud_label: Label
@@ -49,6 +55,17 @@ var modal_body: VBoxContainer
 var poker_table: Control
 var synthesis_table: Control
 var dive_table: Control
+var tutorial_panel: PanelContainer
+var tutorial_progress_label: Label
+var tutorial_title_label: Label
+var tutorial_description_label: Label
+var tutorial_target_label: Label
+var title_overlay: Control
+var title_continue_button: Button
+var title_new_button: Button
+var title_status_label: Label
+var title_latest_save: Dictionary = {}
+var title_new_confirm_pending: bool = false
 var collection_view: String = "items"
 var collection_tier_filter: int = 0
 var collection_category_filter: String = "全部"
@@ -72,12 +89,15 @@ func _ready() -> void:
 	_build_npc_visuals()
 	_apply_npc_schedule()
 	_build_ui()
+	initial_player_position = player.global_position
 	player.interact_requested.connect(_interact)
 	player.inventory_requested.connect(_open_collection)
 	_refresh_hud()
 	# Optional local visual-QA entry points.
 	var user_args := OS.get_cmdline_user_args()
+	var preview_mode := false
 	if user_args.has("preview-poker") or user_args.has("preview-rules"):
+		preview_mode = true
 		game.begin_poker_session(80)
 		game.start_poker_hand()
 		if user_args.has("preview-poker"):
@@ -88,16 +108,26 @@ func _ready() -> void:
 		if user_args.has("preview-rules"):
 			poker_table._show_rules()
 	elif user_args.has("preview-collection"):
+		preview_mode = true
 		_open_collection()
 	elif user_args.has("preview-shop"):
+		preview_mode = true
 		_open_shop()
 	elif user_args.has("preview-synthesis"):
+		preview_mode = true
 		_open_synthesis()
 	elif user_args.has("preview-home"):
+		preview_mode = true
 		_open_home()
+	if title_screen_enabled and not preview_mode:
+		_build_title_screen()
 
 
 func _process(delta: float) -> void:
+	var title_open: bool = title_overlay != null and title_overlay.visible
+	game.set_time_pause("title_screen", title_open, game.TIME_STATE_UI)
+	if title_open:
+		return
 	var dive_activity_open: bool = dive_table != null and dive_table.visible and dive_table.mode == "dive"
 	var dive_interface_open: bool = dive_table != null and dive_table.visible and dive_table.mode != "dive"
 	var formal_activity_open: bool = (synthesis_table != null and synthesis_table.visible) or (poker_table != null and poker_table.visible) or dive_activity_open
@@ -115,6 +145,8 @@ func _process(delta: float) -> void:
 	_update_nearest_marker()
 	if last_npc_phase != game.phase_name():
 		_apply_npc_schedule()
+	if not game.journey_tutorial_actions.has("move") and player.global_position.distance_to(initial_player_position) >= 48.0:
+		game.record_journey_tutorial_action("move")
 
 
 func _notification(what: int) -> void:
@@ -131,6 +163,9 @@ func _notification(what: int) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if title_overlay != null and title_overlay.visible:
+		get_viewport().set_input_as_handled()
+		return
 	if dive_table != null and dive_table.visible:
 		if event.is_action_pressed("interact") and dive_table.mode == "dive":
 			dive_table.handle_interact()
@@ -333,6 +368,41 @@ func _build_ui() -> void:
 	prompt_label.add_theme_font_size_override("font_size", 17)
 	bottom_panel.add_child(prompt_label)
 
+	tutorial_panel = PanelContainer.new()
+	tutorial_panel.name = "JourneyTutorialPanel"
+	tutorial_panel.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	tutorial_panel.offset_left = 20
+	tutorial_panel.offset_top = 90
+	tutorial_panel.offset_right = 350
+	tutorial_panel.offset_bottom = 300
+	tutorial_panel.add_theme_stylebox_override("panel", _panel_style(Color("17363dea"), Color("d5bd68")))
+	ui_root.add_child(tutorial_panel)
+	var tutorial_box := VBoxContainer.new()
+	tutorial_box.add_theme_constant_override("separation", 7)
+	tutorial_panel.add_child(tutorial_box)
+	var tutorial_header := HBoxContainer.new()
+	tutorial_header.add_theme_constant_override("separation", 8)
+	tutorial_box.add_child(tutorial_header)
+	tutorial_progress_label = _make_text("旅程引导", Color("f3d77d"))
+	tutorial_progress_label.add_theme_font_size_override("font_size", 18)
+	tutorial_progress_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	tutorial_header.add_child(tutorial_progress_label)
+	var tutorial_hide := _make_button("隐藏", _hide_journey_tutorial)
+	tutorial_hide.name = "HideJourneyTutorial"
+	tutorial_hide.custom_minimum_size = Vector2(64, 30)
+	tutorial_header.add_child(tutorial_hide)
+	tutorial_title_label = _make_text("", Color("eef4e8"))
+	tutorial_title_label.add_theme_font_size_override("font_size", 20)
+	tutorial_box.add_child(tutorial_title_label)
+	tutorial_description_label = _make_text("", Color("c6d8d5"))
+	tutorial_description_label.custom_minimum_size.y = 45
+	tutorial_box.add_child(tutorial_description_label)
+	tutorial_target_label = _make_text("", Color("8eddb7"))
+	tutorial_box.add_child(tutorial_target_label)
+	var tutorial_map := _make_button("在地图上查看目标", _open_tutorial_map)
+	tutorial_map.name = "JourneyTutorialMap"
+	tutorial_box.add_child(tutorial_map)
+
 	toast_panel = PanelContainer.new()
 	toast_panel.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
 	toast_panel.offset_left = -310
@@ -401,6 +471,151 @@ func _build_ui() -> void:
 	dive_table.closed.connect(_on_dive_table_closed)
 	dive_table.checkpoint_requested.connect(_on_dive_checkpoint_requested)
 	ui_root.add_child(dive_table)
+
+
+func _build_title_screen() -> void:
+	title_overlay = Control.new()
+	title_overlay.name = "TitleScreen"
+	title_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	title_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	ui_root.add_child(title_overlay)
+
+	var background := TextureRect.new()
+	background.texture = IslandGroundMap
+	background.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	background.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	background.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
+	background.modulate = Color("c7d8cc")
+	background.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	title_overlay.add_child(background)
+	var shade := ColorRect.new()
+	shade.color = Color(0.025, 0.07, 0.085, 0.72)
+	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	shade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	title_overlay.add_child(shade)
+
+	var margin := MarginContainer.new()
+	margin.anchor_left = 0.08
+	margin.anchor_top = 0.08
+	margin.anchor_right = 0.92
+	margin.anchor_bottom = 0.92
+	title_overlay.add_child(margin)
+	var panel := PanelContainer.new()
+	panel.add_theme_stylebox_override("panel", _panel_style(Color("15343bf2"), Color("89b4ac")))
+	margin.add_child(panel)
+	var page := VBoxContainer.new()
+	page.add_theme_constant_override("separation", 16)
+	panel.add_child(page)
+	var eyebrow := _make_text("一座会记住你的选择、发现与财富起伏的海岛", Color("9edab9"))
+	eyebrow.add_theme_font_size_override("font_size", 17)
+	page.add_child(eyebrow)
+	var title := _make_text("万物之岛", Color("f2d57c"))
+	title.add_theme_font_size_override("font_size", 46)
+	page.add_child(title)
+	page.add_child(_make_text("从三种根源出发，发现万物；在潜捕、交易、牌会与竞速之间，经营一段属于自己的岛上生活。", Color("e8f0e9")))
+	page.add_child(HSeparator.new())
+
+	var content := HBoxContainer.new()
+	content.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	content.add_theme_constant_override("separation", 22)
+	page.add_child(content)
+	var left := VBoxContainer.new()
+	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	left.add_theme_constant_override("separation", 12)
+	content.add_child(left)
+	left.add_child(_make_text("你的旅程没有唯一顺序", Color("f2d57c")))
+	left.add_child(_make_text("• 在造化盆里建立四层万物谱系\n• 潜入海岸、阅读鱼市并完成角色订单\n• 从命运牌会与逐风竞速中承担风险\n• 用商会份契、居所收藏和归潮盛典留下长期成果", Color("c9ddda")))
+	var principle := PanelContainer.new()
+	principle.add_theme_stylebox_override("panel", _panel_style(Color("1d4146c8"), Color("6a8e8c")))
+	left.add_child(principle)
+	principle.add_child(_make_text("玩法提示会根据真实进度逐步推进。你可以随时隐藏引导，也可以先去任何感兴趣的地方。", Color("a8e0c1")))
+	left.add_spacer(false)
+	left.add_child(_make_text("版本 %d · 存档采用原子替换与7日轮换自动备份" % game.SAVE_VERSION, Color("8eaaa9")))
+
+	var save_card := PanelContainer.new()
+	save_card.custom_minimum_size.x = 355
+	save_card.add_theme_stylebox_override("panel", _panel_style(Color("102a31ef"), Color("d0b963")))
+	content.add_child(save_card)
+	var save_box := VBoxContainer.new()
+	save_box.add_theme_constant_override("separation", 11)
+	save_card.add_child(save_box)
+	save_box.add_child(_make_text("继续你的岛上生活", Color("f2d57c")))
+	var summaries: Array = []
+	if title_save_override_enabled:
+		summaries = game.available_save_summaries(title_save_paths_override) if not title_save_paths_override.is_empty() else []
+	else:
+		summaries = game.available_save_summaries()
+	title_latest_save = summaries[0].duplicate(true) if not summaries.is_empty() else {}
+	var summary_copy := "还没有可读取的旅程。新游戏会从第1天清晨、120金贝与三种根源开始。"
+	if not title_latest_save.is_empty():
+		summary_copy = "%s · %s\n第%d天 %d/16潮刻 · %s · %s\n持有%d金贝 · 已发现%d项万物%s\n保存于 %s" % [
+			str(title_latest_save.get("kind", "存档")), str(title_latest_save.get("area", "漂流湾")),
+			int(title_latest_save.get("day", 1)), int(title_latest_save.get("tide", 1)), str(title_latest_save.get("weather", "晴")), str(title_latest_save.get("wind", "侧风")),
+			int(title_latest_save.get("account_wealth", 0)), int(title_latest_save.get("discovered_count", 3)),
+			" · 已完成归潮盛典" if bool(title_latest_save.get("finale_completed", false)) else "",
+			_format_save_time(int(title_latest_save.get("saved_at_unix", 0)))
+		]
+	save_box.add_child(_make_text(summary_copy, Color("c8dcda")))
+	title_status_label = _make_text("选择继续或开始一段新旅程。", Color("9fbbb8"))
+	title_status_label.name = "TitleStatus"
+	title_status_label.custom_minimum_size.y = 42
+	save_box.add_child(title_status_label)
+	title_continue_button = _make_button("继续游戏", _continue_latest_save, title_latest_save.is_empty())
+	title_continue_button.name = "ContinueGame"
+	title_continue_button.custom_minimum_size.y = 48
+	save_box.add_child(title_continue_button)
+	title_new_button = _make_button("新游戏", _start_new_game)
+	title_new_button.name = "NewGame"
+	title_new_button.custom_minimum_size.y = 48
+	save_box.add_child(title_new_button)
+	var quit_button := _make_button("退出游戏", _quit_from_title)
+	quit_button.name = "QuitGame"
+	save_box.add_child(quit_button)
+	player.controls_enabled = false
+	_refresh_tutorial_panel()
+
+
+func _format_save_time(unix_time: int) -> String:
+	if unix_time <= 0:
+		return "未知时间"
+	var parts: Dictionary = Time.get_datetime_dict_from_unix_time(unix_time)
+	return "%04d-%02d-%02d %02d:%02d" % [int(parts["year"]), int(parts["month"]), int(parts["day"]), int(parts["hour"]), int(parts["minute"])]
+
+
+func _continue_latest_save() -> void:
+	if title_latest_save.is_empty():
+		title_status_label.text = "没有找到可读取的存档。"
+		return
+	var result: Dictionary = game.load_game(str(title_latest_save.get("path", "")))
+	if not bool(result.get("ok", false)):
+		title_status_label.text = str(result.get("text", "读档失败，当前状态未被修改。"))
+		return
+	var world = result.get("world", {})
+	_apply_loaded_world(world if world is Dictionary else {})
+	_enter_world("已读取%s。" % str(title_latest_save.get("kind", "存档")))
+
+
+func _start_new_game() -> void:
+	if not title_latest_save.is_empty() and not title_new_confirm_pending:
+		title_new_confirm_pending = true
+		title_status_label.text = "再次点击确认开始新旅程。现有存档不会立即删除；只有之后主动保存才会替换手动档。"
+		title_status_label.add_theme_color_override("font_color", Color("f0d27e"))
+		title_new_button.text = "确认开始新旅程"
+		return
+	_enter_world("新旅程开始了。旅程引导会记录真实玩法进度。")
+
+
+func _enter_world(message: String) -> void:
+	title_overlay.visible = false
+	game.set_time_pause("title_screen", false)
+	player.controls_enabled = true
+	initial_player_position = player.global_position
+	_refresh_hud()
+	_show_toast(message)
+
+
+func _quit_from_title() -> void:
+	get_tree().quit()
 
 
 func _panel_style(background: Color, border: Color) -> StyleBoxFlat:
@@ -506,6 +721,41 @@ func _refresh_hud() -> void:
 		coin_text, game.wealth_title(), clock_text, game.suggested_reserve()
 	]
 	inventory_button.text = "万物 %d" % game.discovered_item_ids().size()
+	_refresh_tutorial_panel()
+
+
+func _refresh_tutorial_panel() -> void:
+	if tutorial_panel == null or game == null:
+		return
+	var state: Dictionary = game.journey_tutorial_state()
+	var title_open: bool = title_overlay != null and title_overlay.visible
+	tutorial_panel.visible = not title_open and not bool(state.get("hidden", false)) and not bool(state.get("complete", false))
+	if not tutorial_panel.visible:
+		return
+	var current: Dictionary = state.get("current", {})
+	tutorial_progress_label.text = "旅程引导 · %d/%d" % [int(state.get("completed_count", 0)), int(state.get("total", 0))]
+	tutorial_title_label.text = str(current.get("title", "继续探索"))
+	tutorial_description_label.text = str(current.get("description", "岛上的系统会随你的真实行动逐步展开。"))
+	tutorial_target_label.text = "下一站：%s" % str(current.get("target", "查看地图"))
+
+
+func _hide_journey_tutorial() -> void:
+	game.set_journey_tutorial_hidden(true)
+	_show_toast("旅程引导已隐藏；可在“日程”中重新显示。")
+
+
+func _show_journey_tutorial() -> void:
+	var state: Dictionary = game.journey_tutorial_state()
+	if bool(state.get("complete", false)):
+		_show_result("旅程引导", "七个基础步骤已经全部完成。岛上的长期目标仍可继续自由推进。", _open_time_menu)
+		return
+	game.set_journey_tutorial_hidden(false)
+	_close_modal()
+	_show_toast("旅程引导已重新显示。")
+
+
+func _open_tutorial_map() -> void:
+	_open_map()
 
 
 func _update_area_discovery() -> void:
@@ -1037,6 +1287,7 @@ func _on_dive_checkpoint_requested(_reason: String) -> void:
 
 func _open_shop() -> void:
 	_open_modal("椰影杂货铺")
+	var shop_schedule: Dictionary = game.npc_schedule_entry("shopkeeper")
 	var intro := PanelContainer.new()
 	intro.add_theme_stylebox_override("panel", _panel_style(Color("183b41"), Color("c39b58")))
 	var intro_row := HBoxContainer.new()
@@ -1050,7 +1301,11 @@ func _open_shop() -> void:
 	intro_copy.add_child(welcome)
 	intro_copy.add_child(_make_text("这里提供配方方向线索与实验折扣。全部万物都要在造化盆中亲自发现，服务只帮助你理解关系。", Color("c9e5df")))
 	intro_copy.add_child(_make_text("当前%d金贝 · 永久万物%d种 · 实验折扣%d次" % [game.cash, game.discovered_item_ids().size(), game.synthesis_discount_uses], Color("f0d27e")))
-	intro_copy.add_child(_make_text("“我卖的是别人走过的路。学会以后，那条路就归你了。”——阿拓", Color("eab77f")))
+	if bool(shop_schedule.get("available", false)):
+		intro_copy.add_child(_make_text("阿拓在场 · %s。\n“我卖的是别人走过的路。学会以后，那条路就归你了。”" % str(shop_schedule.get("activity", "整理研究记录")), Color("eab77f")))
+	else:
+		var substitute := str(shop_schedule.get("substitute", "代班店员"))
+		intro_copy.add_child(_make_text("阿拓当前在%s；%s正在代班。两项公共研究服务照常开放，人物交谈请按地图行踪寻找阿拓。" % [str(shop_schedule.get("location", "岛上别处")), substitute], Color("a9c8c5")))
 	intro_row.add_child(intro_copy)
 	modal_body.add_child(intro)
 	var purchase_title := _make_text("关系线索与研究服务", Color("ffe7a6"))
@@ -1157,6 +1412,15 @@ func _open_time_menu() -> void:
 	load_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	save_row.add_child(load_button)
 	modal_body.add_child(save_row)
+	var tutorial_state: Dictionary = game.journey_tutorial_state()
+	modal_body.add_child(_make_text("旅程引导：已完成%d/%d步。引导只读取真实玩法进度，不会限制探索顺序。" % [
+		int(tutorial_state.get("completed_count", 0)), int(tutorial_state.get("total", 0))
+	], Color("a8d9bd")))
+	modal_body.add_child(_make_button(
+		"查看已完成的旅程步骤" if bool(tutorial_state.get("complete", false)) else ("重新显示旅程引导" if bool(tutorial_state.get("hidden", false)) else "旅程引导正在显示"),
+		_show_journey_tutorial,
+		not bool(tutorial_state.get("hidden", false)) and not bool(tutorial_state.get("complete", false))
+	))
 	if game.day_end_pending:
 		modal_body.add_child(_make_text("夜深了，时间已停驻。睡眠时先结算三家商会经营与分红，再以新报价撮合隔夜订单。", Color("ffd98a")))
 
@@ -1176,7 +1440,22 @@ func _time_to_next_phase() -> float:
 	return maxf(0.000001, boundary - current_time)
 
 
-func _wait_tides(amount: float) -> void:
+func _wait_tides(amount: float, confirmed: bool = false) -> void:
+	var warnings := _time_advance_warnings(amount)
+	if not confirmed and not warnings.is_empty():
+		_open_modal("确认等待")
+		modal_body.add_child(_make_text("等待%.2f潮刻会触发以下变化：\n• %s" % [amount, "\n• ".join(warnings)], Color("f0d27e")))
+		modal_body.add_child(_make_text("确认后按统一边界顺序推进；取消不会消耗时间或金贝。", Color("bcd5d2")))
+		var action_row := HBoxContainer.new()
+		action_row.add_theme_constant_override("separation", 8)
+		var cancel := _make_button("取消", _open_time_menu)
+		cancel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		action_row.add_child(cancel)
+		var confirm := _make_button("确认等待", _wait_tides.bind(amount, true))
+		confirm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		action_row.add_child(confirm)
+		modal_body.add_child(action_row)
+		return
 	var old_day: int = game.day
 	var old_tide: int = game.tide
 	if not game.fast_forward_time(amount, "主动等待"):
@@ -1190,6 +1469,28 @@ func _wait_tides(amount: float) -> void:
 		],
 		_open_time_menu
 	)
+
+
+func _time_advance_warnings(amount: float) -> Array[String]:
+	var warnings: Array[String] = []
+	var start_value := float(game.tide - 1) + float(game.tide_progress)
+	var end_value := minf(16.0, start_value + maxf(0.0, amount))
+	var crosses_phase := int(floor(start_value / 4.0)) != int(floor(minf(15.999, end_value) / 4.0))
+	for raw_event in game.race_schedule_rows():
+		var event: Dictionary = raw_event
+		var event_time := float(int(event.get("scheduled_tide", 1)) - 1)
+		if not bool(event.get("completed", false)) and event_time > start_value and event_time <= end_value:
+			warnings.append("逐风赛事“%s”会封盘或变为错过" % str(event.get("name", "赛事")))
+	for raw_order in game.fish_market_orders:
+		var order: Dictionary = raw_order
+		var deadline_time := float(int(order.get("deadline_tide", 16)) - 1)
+		if not bool(order.get("completed", false)) and deadline_time > start_value and deadline_time <= end_value:
+			warnings.append("鱼获专单“%s”会到达截止潮刻" % str(order.get("title", "人物订单")))
+	if crosses_phase and not game.fish_catch_inventory.is_empty():
+		warnings.append("你持有的鱼获会失鲜，鱼市供需与报价也会刷新")
+	if crosses_phase and not game.share_pending_orders.is_empty():
+		warnings.append("潮汐商会将跨过开收盘边界，待撮合订单可能成交或退款")
+	return warnings
 
 
 func _world_save_state() -> Dictionary:
@@ -2487,7 +2788,16 @@ func _open_map() -> void:
 	_open_modal("岛屿地图")
 	var overview = MapOverviewScript.new()
 	var npc_entries: Array = game.npc_map_entries()
-	overview.setup(IslandGroundMap, discovered_areas, player.global_position, npc_entries)
+	var active_requests: Array[String] = []
+	var quest_entries: Array = []
+	for npc_id in NpcCatalogScript.core_ids():
+		var request: Dictionary = game.npc_request_info(npc_id)
+		if str(request.get("state", "")) == "active":
+			var npc_name := str(game.npc_profile(npc_id).get("name", npc_id))
+			active_requests.append("%s：%s" % [npc_name, str(request.get("objective", ""))])
+			var schedule: Dictionary = game.npc_schedule_entry(npc_id)
+			quest_entries.append({"npc_id": npc_id, "name": npc_name, "area": str(schedule.get("area", ""))})
+	overview.setup(IslandGroundMap, discovered_areas, player.global_position, npc_entries, quest_entries)
 	modal_body.add_child(overview)
 	modal_body.add_child(_make_text("白圈是当前位置；地点节点对应真实入口。人物标记只显示已认识NPC所在的区域，不公开其精确脚下坐标。已发现区域之间快速前往消耗0.25潮刻。", Color("bde9f2")))
 	modal_body.add_child(_make_text("当前：第%d天%s · %s · %s" % [game.day, game.phase_name(), game.weather, game.wind_direction], Color("f1d687")))
@@ -2500,17 +2810,28 @@ func _open_map() -> void:
 				var substitute := str(entry.get("substitute", ""))
 				status = "%s%s" % [status, (" · 基础服务由%s代班" % substitute) if not substitute.is_empty() else " · 当前不可交谈"]
 			modal_body.add_child(_make_text("• %s：%s" % [str(entry.get("name", "人物")), status], Color("c7dcda") if bool(entry.get("available", false)) else Color("8fa1a3")))
-	var active_requests: Array[String] = []
-	for npc_id in NpcCatalogScript.core_ids():
-		var request: Dictionary = game.npc_request_info(npc_id)
-		if str(request.get("state", "")) == "active":
-			active_requests.append("%s：%s" % [str(game.npc_profile(npc_id).get("name", npc_id)), str(request.get("objective", ""))])
+	var business_lines: Array[String] = []
+	var shop_schedule: Dictionary = game.npc_schedule_entry("shopkeeper")
+	business_lines.append("椰影杂货铺：%s" % ("阿拓在场" if bool(shop_schedule.get("available", false)) else "%s代班" % str(shop_schedule.get("substitute", "店员"))))
+	var fish_rows: Array = game.fish_market_rows()
+	if not fish_rows.is_empty():
+		business_lines.append("蓝鳍鱼铺：当前高价%s %d金贝 · 下个时段刷新" % [str(fish_rows[0].get("name", "鱼获")), int(fish_rows[0].get("quote", 0))])
+	var share_status: Dictionary = game.share_market_status()
+	business_lines.append("潮汐商会：%s · %s" % [str(share_status.get("label", "营业状态未知")), str(share_status.get("next_boundary", ""))])
+	for raw_event in game.race_schedule_rows():
+		var event: Dictionary = raw_event
+		if bool(event.get("active", false)):
+			business_lines.append("逐风竞速：%s正在开放" % str(event.get("name", "今日赛事")))
+			break
+	modal_body.add_child(_make_text("今日营业与活动\n• %s" % "\n• ".join(business_lines), Color("a9d9bf")))
 	if not active_requests.is_empty():
-		modal_body.add_child(_make_text("追踪中的委托\n• %s" % "\n• ".join(active_requests), Color("f0cf82")))
+		modal_body.add_child(_make_text("追踪中的委托（地图金色菱形）\n• %s" % "\n• ".join(active_requests), Color("f0cf82")))
 	for area_name in WorldLayoutScript.AREA_ORDER:
 		var unlocked := discovered_areas.has(area_name)
 		var region: Dictionary = WorldLayoutScript.REGIONS[area_name]
 		var label := "%s%s · %s" % ["前往 " if unlocked else "尚未发现 ", area_name, str(region["subtitle"])]
+		if not unlocked:
+			label += " · 沿岛上主路步行进入后开放"
 		modal_body.add_child(_make_button(label, _travel_to.bind(area_name), not unlocked))
 
 

@@ -109,6 +109,7 @@ func _test_determinism_and_save_roundtrip() -> void:
 func _test_player_reachable_ui() -> void:
 	root.size = Vector2i(1280, 720)
 	var scene = MainScene.instantiate()
+	scene.title_screen_enabled = false
 	root.add_child(scene)
 	await process_frame
 	assert(not WorldLayoutScript.marker_definition("exchange").is_empty(), "椰影街必须存在潮汐商会实际地标。")

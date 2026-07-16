@@ -126,6 +126,7 @@ func _test_invitations_social_summary_and_save() -> void:
 func _test_session_ui() -> void:
 	root.size = Vector2i(1280, 720)
 	var scene = MainScene.instantiate()
+	scene.title_screen_enabled = false
 	root.add_child(scene)
 	await process_frame
 	scene._open_poker()

@@ -22,6 +22,10 @@ BLOCKING_TESTS: tuple[tuple[str, str], ...] = (
         "SYNTHESIS SIGNAL LIFETIME TEST PASS",
     ),
     ("res://tests/world_time_save_test.gd", "WORLD TIME SAVE TEST PASS"),
+    (
+        "res://tests/title_tutorial_flow_test.gd",
+        "TITLE TUTORIAL FLOW TEST PASS",
+    ),
     ("res://tests/fish_market_system_test.gd", "FISH MARKET SYSTEM TEST PASS"),
     (
         "res://tests/economy_equipment_order_test.gd",

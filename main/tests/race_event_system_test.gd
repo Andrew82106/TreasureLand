@@ -106,6 +106,7 @@ func _test_aid_does_not_change_event() -> void:
 func _test_race_ui_history_and_replay() -> void:
 	root.size = Vector2i(1280, 720)
 	var scene = MainScene.instantiate()
+	scene.title_screen_enabled = false
 	root.add_child(scene)
 	await process_frame
 	scene.game.cash = 1000

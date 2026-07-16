@@ -80,7 +80,7 @@ func _test_equipment_growth_and_save_migration() -> void:
 	assert(state.dive_area_unlocked("wreck_edge"), "二级呼吸设备必须作为沉船外缘的一条公开资格。")
 
 	var saved := state.build_save_data({})
-	assert(int(saved.get("version", 0)) == 8, "分类账、恢复工作、装备等级与专属订单必须进入版本8存档。")
+	assert(int(saved.get("version", 0)) == state.SAVE_VERSION, "分类账、恢复工作、装备等级与专属订单必须进入当前版本存档。")
 	var restored := _state()
 	assert(bool(restored.restore_save_data(saved).get("ok", false)) and restored.dive_equipment_levels == state.dive_equipment_levels, "版本8必须完整往返装备等级与派生参数。")
 	assert(restored.economy_events == state.economy_events and restored.economy_day_opening == state.economy_day_opening, "版本8必须完整往返日内分类账与期初快照。")

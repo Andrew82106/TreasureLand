@@ -11,6 +11,7 @@ func _run() -> void:
 	var output_dir := ProjectSettings.globalize_path("res://tests/artifacts")
 	DirAccess.make_dir_recursive_absolute(output_dir)
 	var scene = MainScene.instantiate()
+	scene.title_screen_enabled = false
 	root.add_child(scene)
 	await process_frame
 	await process_frame

@@ -7,13 +7,15 @@ var map_texture: Texture2D
 var discovered_areas: Dictionary = {}
 var player_position := Vector2.ZERO
 var npc_entries: Array = []
+var quest_entries: Array = []
 
 
-func setup(texture_value: Texture2D, discovered_value: Dictionary, player_value: Vector2, npc_value: Array = []) -> void:
+func setup(texture_value: Texture2D, discovered_value: Dictionary, player_value: Vector2, npc_value: Array = [], quest_value: Array = []) -> void:
 	map_texture = texture_value
 	discovered_areas = discovered_value.duplicate()
 	player_position = player_value
 	npc_entries = npc_value.duplicate(true)
+	quest_entries = quest_value.duplicate(true)
 	custom_minimum_size = Vector2(730, 266)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	queue_redraw()
@@ -92,6 +94,22 @@ func _draw() -> void:
 			9,
 			Color("fff0bc") if bool(entry.get("available", false)) else Color("9eaaab")
 		)
+
+	var quest_area_counts := {}
+	for raw_quest in quest_entries:
+		var quest: Dictionary = raw_quest
+		var area_name := str(quest.get("area", ""))
+		if area_name.is_empty() or not discovered_areas.has(area_name) or not WorldLayoutScript.REGIONS.has(area_name):
+			continue
+		var region: Rect2 = WorldLayoutScript.REGIONS[area_name]["rect"]
+		var quest_index := int(quest_area_counts.get(area_name, 0))
+		quest_area_counts[area_name] = quest_index + 1
+		var anchor := region.position + Vector2(145 + quest_index * 92, region.size.y - 105)
+		var point := map_rect.position + anchor * scale_value
+		var diamond := PackedVector2Array([point + Vector2(0, -6), point + Vector2(6, 0), point + Vector2(0, 6), point + Vector2(-6, 0)])
+		draw_colored_polygon(diamond, Color("f2cf69"))
+		draw_polyline(PackedVector2Array([diamond[0], diamond[1], diamond[2], diamond[3], diamond[0]]), Color("4b3b18"), 1.5)
+		draw_string(ThemeDB.fallback_font, point + Vector2(8, 4), "委托 · %s" % str(quest.get("name", "目标")), HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color("ffe99e"))
 
 	var player_point := map_rect.position + player_position * scale_value
 	draw_circle(player_point, 7.0, Color("ffffff"), false, 2.0)

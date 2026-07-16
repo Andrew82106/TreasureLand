@@ -85,7 +85,7 @@ const TIME_STATE_UI := "ui_paused"
 const TIME_STATE_ACTIVITY := "activity_snapshot"
 const TIME_STATE_FAST_FORWARD := "fast_forward"
 const TIME_STATE_DAY_END := "day_end_hold"
-const SAVE_VERSION := 8
+const SAVE_VERSION := 9
 const MANUAL_SAVE_PATH := "user://saves/manual_save.json"
 const POKER_TIERS := [
 	{"name": "潮边小桌", "buy_in": 80, "wealth_required": 0, "small_blind": 1, "big_blind": 2, "description": "认识规则与人物，输赢幅度较小"},
@@ -105,6 +105,15 @@ const POKER_TUTORIAL_LESSONS := [
 	{"title": "既济与双镜", "objective": "既济比较两水两火的势阶平衡；双镜比较两个水火同阶镜像。", "hint": "本手初兆会形成既济；规则页保留双镜对照示例。"},
 	{"title": "下注所表达的信息", "objective": "公开天象只表示可能性；下注尺度可以代表真牌，也可以施压。", "hint": "本手公共天象很有威胁，但你的两张命牌仍限制真实命象。"},
 	{"title": "离桌与结算", "objective": "辨认投入、返还、服务费、当前额度和固定2潮刻结算。", "hint": "教学局免服务费；结束后只把超过100的净盈利带回钱包。"}
+]
+const JOURNEY_TUTORIAL_STEPS := [
+	{"id": "explore", "title": "走进万物之岛", "description": "离开起点走一段路，认识方向与附近的岛民。", "target": "漂流湾"},
+	{"id": "synthesis", "title": "第一次造化", "description": "在造化盆中选择两个已知万物，完成一次成功的关系实验。", "target": "漂流湾 · 造化盆"},
+	{"id": "dive", "title": "第一次潜捕", "description": "从浅滩下水，注意氧气与鱼篓，并主动上浮完成结算。", "target": "逐风海岸 · 浅滩采集"},
+	{"id": "market", "title": "把鱼获带回生活", "description": "查看供需报价，完成一笔鱼铺出售或人物专属订单。", "target": "椰影街 · 蓝鳍鱼铺"},
+	{"id": "poker", "title": "完成命象教学", "description": "接受榕奶奶的六手教学，理解命牌、天象、下注与离桌。", "target": "椰影街 · 命运牌会"},
+	{"id": "race", "title": "看完一场逐风赛", "description": "阅读赛兽信息，购买一张祝胜券并完成一场正式赛事。", "target": "逐风海岸 · 逐风竞速"},
+	{"id": "rest", "title": "完成第一个日终", "description": "回到漂流小屋核对当日账簿，睡到第二天。", "target": "漂流湾 · 漂流小屋"}
 ]
 
 const ORACLE_WATER_NAMES := ["水滴", "雨幕", "溪流", "湖泊", "江河", "海洋"]
@@ -238,6 +247,8 @@ var poker_player_brought: int = 0
 var poker_session_tutorial: bool = false
 var poker_tutorial_balance: int = 0
 var poker_tutorial_settled: bool = false
+var journey_tutorial_actions := {}
+var journey_tutorial_hidden: bool = false
 var poker_session_time_charged: bool = false
 var poker_session_seed: int = 0
 var poker_test_passive_ai: bool = false
@@ -274,6 +285,71 @@ func _init() -> void:
 
 func can_save_game() -> bool:
 	return not poker_session_active and not dive_active and locked_principal == 0
+
+
+func record_journey_tutorial_action(action_id: String) -> void:
+	if action_id.is_empty() or journey_tutorial_actions.has(action_id):
+		return
+	journey_tutorial_actions[action_id] = {"day": day, "tide": tide}
+	changed.emit()
+
+
+func set_journey_tutorial_hidden(hidden_value: bool) -> void:
+	if journey_tutorial_hidden == hidden_value:
+		return
+	journey_tutorial_hidden = hidden_value
+	changed.emit()
+
+
+func _journey_tutorial_step_complete(step_id: String) -> bool:
+	match step_id:
+		"explore":
+			if journey_tutorial_actions.has("move") or day > 1 or discovered_item_ids().size() > INITIAL_DISCOVERIES.size() or dive_sequence > 0:
+				return true
+			for raw_npc_id in known_npcs.keys():
+				if str(raw_npc_id) != "granny" and bool(known_npcs.get(raw_npc_id, false)):
+					return true
+			return false
+		"synthesis":
+			return discovered_item_ids().size() > INITIAL_DISCOVERIES.size()
+		"dive":
+			return dive_sequence > 0
+		"market":
+			if not fish_market_transactions.is_empty():
+				return true
+			for raw_order in fish_market_orders:
+				if raw_order is Dictionary and bool(raw_order.get("completed", false)):
+					return true
+			return false
+		"poker":
+			return poker_completed
+		"race":
+			return not race_history.is_empty()
+		"rest":
+			return day > 1 or not day_end_reports.is_empty()
+	return false
+
+
+func journey_tutorial_state() -> Dictionary:
+	var rows: Array = []
+	var completed_count := 0
+	var current: Dictionary = {}
+	for raw_step in JOURNEY_TUTORIAL_STEPS:
+		var row: Dictionary = raw_step.duplicate(true)
+		row["completed"] = _journey_tutorial_step_complete(str(row["id"]))
+		if bool(row["completed"]):
+			completed_count += 1
+		elif current.is_empty():
+			current = row.duplicate(true)
+		rows.append(row)
+	return {
+		"steps": rows,
+		"completed_count": completed_count,
+		"total": JOURNEY_TUTORIAL_STEPS.size(),
+		"complete": completed_count == JOURNEY_TUTORIAL_STEPS.size(),
+		"hidden": journey_tutorial_hidden,
+		"current": current
+	}
 
 
 func build_save_data(world_state: Dictionary = {}) -> Dictionary:
@@ -383,7 +459,9 @@ func build_save_data(world_state: Dictionary = {}) -> Dictionary:
 			"day_end_reports": day_end_reports.duplicate(true),
 			"economy_day_opening": economy_day_opening.duplicate(true),
 			"relief_last_day": relief_last_day,
-			"relief_history": relief_history.duplicate(true)
+			"relief_history": relief_history.duplicate(true),
+			"journey_tutorial_actions": journey_tutorial_actions.duplicate(true),
+			"journey_tutorial_hidden": journey_tutorial_hidden
 		},
 		"world": world_state.duplicate(true)
 	}
@@ -429,6 +507,79 @@ func save_auto_game(world_state: Dictionary = {}) -> Dictionary:
 		if day > 7 and FileAccess.file_exists(expired_path):
 			DirAccess.remove_absolute(ProjectSettings.globalize_path(expired_path))
 	return result
+
+
+func save_summary(path: String) -> Dictionary:
+	if path.is_empty() or not FileAccess.file_exists(path):
+		return {"ok": false, "path": path, "text": "存档不存在。"}
+	var file := FileAccess.open(path, FileAccess.READ)
+	if file == null:
+		return {"ok": false, "path": path, "text": "存档无法读取。"}
+	var parsed = JSON.parse_string(file.get_as_text())
+	file.close()
+	if not parsed is Dictionary:
+		return {"ok": false, "path": path, "text": "存档内容损坏。"}
+	var validation := _validate_save_data(parsed)
+	if not bool(validation.get("ok", false)):
+		return {"ok": false, "path": path, "text": str(validation.get("text", "存档版本不受支持。"))}
+	var saved: Dictionary = parsed.get("state", {})
+	var world: Dictionary = parsed.get("world", {})
+	var discovered_count := 0
+	var saved_discovered = saved.get("discovered", {})
+	if saved_discovered is Dictionary:
+		for raw_value in saved_discovered.values():
+			if bool(raw_value):
+				discovered_count += 1
+	var saved_cash := maxi(0, int(saved.get("cash", 0)))
+	var account_value := saved_cash + maxi(0, int(saved.get("locked_principal", 0))) + maxi(0, int(saved.get("share_reserved_cash", 0)))
+	return {
+		"ok": true,
+		"path": path,
+		"kind": "手动存档" if path == MANUAL_SAVE_PATH else "日终自动存档",
+		"version": int(parsed.get("version", 0)),
+		"saved_at_unix": int(parsed.get("saved_at_unix", 0)),
+		"day": maxi(1, int(saved.get("day", 1))),
+		"tide": clampi(int(saved.get("tide", 1)), 1, 16),
+		"weather": str(saved.get("weather", "晴")),
+		"wind": str(saved.get("wind_direction", "侧风")),
+		"cash": saved_cash,
+		"account_wealth": account_value,
+		"discovered_count": discovered_count,
+		"area": str(world.get("current_area", "漂流湾")),
+		"finale_completed": bool(saved.get("finale_completed", false))
+	}
+
+
+func available_save_summaries(candidate_paths: Array = []) -> Array:
+	var paths: Array[String] = []
+	if not candidate_paths.is_empty():
+		for raw_path in candidate_paths:
+			var candidate := str(raw_path)
+			if not candidate.is_empty() and not paths.has(candidate):
+				paths.append(candidate)
+	else:
+		var directory := DirAccess.open("user://saves")
+		if directory != null:
+			directory.list_dir_begin()
+			var file_name := directory.get_next()
+			while not file_name.is_empty():
+				if not directory.current_is_dir() and (file_name == "manual_save.json" or (file_name.begins_with("autosave_day_") and file_name.ends_with(".json"))):
+					paths.append("user://saves/%s" % file_name)
+				file_name = directory.get_next()
+			directory.list_dir_end()
+	var summaries: Array = []
+	for path in paths:
+		var summary := save_summary(path)
+		if bool(summary.get("ok", false)):
+			summaries.append(summary)
+	summaries.sort_custom(func(left: Dictionary, right: Dictionary) -> bool:
+		var left_time := int(left.get("saved_at_unix", 0))
+		var right_time := int(right.get("saved_at_unix", 0))
+		if left_time == right_time:
+			return str(left.get("kind", "")) == "手动存档" and str(right.get("kind", "")) != "手动存档"
+		return left_time > right_time
+	)
+	return summaries
 
 
 func load_game(path: String = MANUAL_SAVE_PATH) -> Dictionary:
@@ -590,6 +741,8 @@ func restore_save_data(data: Dictionary) -> Dictionary:
 	economy_day_opening = saved.get("economy_day_opening", {}).duplicate(true)
 	relief_last_day = maxi(0, int(saved.get("relief_last_day", 0)))
 	relief_history = saved.get("relief_history", []).duplicate(true)
+	journey_tutorial_actions = saved.get("journey_tutorial_actions", {}).duplicate(true)
+	journey_tutorial_hidden = bool(saved.get("journey_tutorial_hidden", false))
 	if wealth_history.is_empty():
 		_record_wealth("读取旧存档", true)
 	if economy_day_opening.is_empty() or int(economy_day_opening.get("day", 0)) != day:
@@ -629,7 +782,7 @@ func _validate_save_data(data: Dictionary) -> Dictionary:
 	if not data.get("state", {}) is Dictionary or not data.get("world", {}) is Dictionary:
 		return {"ok": false, "text": "存档结构损坏，未修改当前进度。"}
 	var saved: Dictionary = data["state"]
-	for key in ["daily_schedule", "discovered", "discovery_records", "tower_milestones", "attempted_pairs", "relationships", "memories", "known_npcs", "npc_topic_reads", "npc_request_states", "npc_shared_creations", "npc_shared_fish", "npc_deep_talk_days", "npc_talk_counts", "npc_memory_rewarded", "dive_state", "marine_discoveries", "marine_size_records", "fish_market_quotes", "fish_market_stock", "fish_market_demand", "fish_market_reasons", "processed_fish_sales", "dive_equipment", "dive_equipment_levels", "last_dive_result", "share_quotes", "share_previous_quotes", "share_next_quotes", "share_company_reports", "share_lots", "finale_summary", "economy_day_opening"]:
+	for key in ["daily_schedule", "discovered", "discovery_records", "tower_milestones", "attempted_pairs", "relationships", "memories", "known_npcs", "npc_topic_reads", "npc_request_states", "npc_shared_creations", "npc_shared_fish", "npc_deep_talk_days", "npc_talk_counts", "npc_memory_rewarded", "dive_state", "marine_discoveries", "marine_size_records", "fish_market_quotes", "fish_market_stock", "fish_market_demand", "fish_market_reasons", "processed_fish_sales", "dive_equipment", "dive_equipment_levels", "last_dive_result", "share_quotes", "share_previous_quotes", "share_next_quotes", "share_company_reports", "share_lots", "finale_summary", "economy_day_opening", "journey_tutorial_actions"]:
 		if saved.has(key) and not saved[key] is Dictionary:
 			return {"ok": false, "text": "存档字段%s损坏，未修改当前进度。" % key}
 	for key in ["time_event_log", "recent_synthesis_pairs", "wealth_history", "economy_events", "day_end_reports", "relief_history", "poker_npc_wallets", "poker_npc_brought", "poker_npc_present", "poker_session_history", "poker_invitations", "race_events", "race_history", "fish_catch_inventory", "fish_market_orders", "fish_market_history", "fish_market_transactions", "share_pending_orders", "share_trade_history", "share_price_history", "share_dividend_history", "home_display_items", "home_aquarium", "home_guest_history"]:

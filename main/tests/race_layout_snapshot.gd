@@ -10,6 +10,7 @@ func _init() -> void:
 func _run() -> void:
 	root.size = Vector2i(1280, 720)
 	var scene = MainScene.instantiate()
+	scene.title_screen_enabled = false
 	root.add_child(scene)
 	await process_frame
 	await process_frame

@@ -131,6 +131,7 @@ func _test_save_and_migration() -> void:
 func _test_player_reachable_ui() -> void:
 	root.size = Vector2i(1280, 720)
 	var scene = MainScene.instantiate()
+	scene.title_screen_enabled = false
 	root.add_child(scene)
 	await process_frame
 	scene._open_bed()

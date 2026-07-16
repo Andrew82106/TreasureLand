@@ -106,6 +106,7 @@ func _test_tower_goals_and_cross_module_uses() -> void:
 func _test_collection_ui_and_shortcuts() -> void:
 	root.size = Vector2i(1280, 720)
 	var scene = MainScene.instantiate()
+	scene.title_screen_enabled = false
 	root.add_child(scene)
 	await process_frame
 	scene.game.cash = 1000
