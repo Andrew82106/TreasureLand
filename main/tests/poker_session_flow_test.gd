@@ -107,9 +107,9 @@ func _test_invitations_social_summary_and_save() -> void:
 	assert(not bool(used_invitation.get("available", true)) and str(used_invitation.get("status", "")) == "今日已完成", "同一人物邀请每日只能完成一次，不能重复刷取关系。")
 
 	var saved := state.build_save_data({})
-	assert(int(saved.get("version", 0)) == 6, "牌会场次历史与邀请必须随版本6存档保留。")
+	assert(int(saved.get("version", 0)) == 7, "牌会场次历史与邀请必须随版本7存档保留。")
 	var restored = _state()
-	assert(bool(restored.restore_save_data(saved).get("ok", false)), "版本6牌会进程必须可读取。")
+	assert(bool(restored.restore_save_data(saved).get("ok", false)), "版本7牌会进程必须可读取。")
 	assert(restored.poker_session_history == state.poker_session_history, "整场摘要、邀请来源和行为统计必须跨存档保留。")
 	assert(str(restored.poker_invitation_rows("old_joe")[0].get("status", "")) == "今日已完成", "邀请的一日一次状态必须由场次历史跨存档恢复。")
 

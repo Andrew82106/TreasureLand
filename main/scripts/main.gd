@@ -93,6 +93,8 @@ func _ready() -> void:
 		_open_shop()
 	elif user_args.has("preview-synthesis"):
 		_open_synthesis()
+	elif user_args.has("preview-home"):
+		_open_home()
 
 
 func _process(delta: float) -> void:
@@ -359,11 +361,10 @@ func _build_ui() -> void:
 	ui_root.add_child(modal_overlay)
 
 	var modal_panel := PanelContainer.new()
-	modal_panel.set_anchors_preset(Control.PRESET_CENTER)
-	modal_panel.offset_left = -395
-	modal_panel.offset_top = -290
-	modal_panel.offset_right = 395
-	modal_panel.offset_bottom = 290
+	modal_panel.anchor_left = 0.08
+	modal_panel.anchor_top = 0.05
+	modal_panel.anchor_right = 0.92
+	modal_panel.anchor_bottom = 0.95
 	modal_panel.add_theme_stylebox_override("panel", _panel_style(Color("203946"), Color("80aeba")))
 	modal_overlay.add_child(modal_panel)
 
@@ -428,7 +429,10 @@ func _make_button(text_value: String, action: Callable, disabled_value: bool = f
 	button.add_theme_stylebox_override("hover", _button_style(Color("365963"), Color("96b9b3")))
 	button.add_theme_stylebox_override("pressed", _button_style(Color("1f353d"), Color("e2ce82")))
 	button.add_theme_stylebox_override("disabled", _button_style(Color("24363b"), Color("40565a")))
-	button.pressed.connect(action)
+	# Most modal actions rebuild the tree that owns the pressed button. Run the
+	# action after BaseButton has finished emitting so a page transition cannot
+	# free its own native signal emitter.
+	button.pressed.connect(action, CONNECT_DEFERRED)
 	return button
 
 
@@ -933,6 +937,7 @@ func _open_wealth() -> void:
 
 	modal_body.add_child(_make_text("净资产 = 当前金贝 + 活动中/待撮合金贝 + 鱼获保守变现值 + 份契保守变现值。永久万物、知识和凭证不折算现金。", Color("a9c9ca")))
 	modal_body.add_child(_make_button("查看潮汐商会份契", _open_share_market))
+	modal_body.add_child(_make_button("把财富用于居所与收藏", _open_home))
 	var chart = WealthChartScript.new()
 	chart.setup(history)
 	modal_body.add_child(chart)
@@ -1222,10 +1227,277 @@ func _manual_load() -> void:
 	_show_result("读取存档", str(result.get("text", "读档未完成。")), _open_time_menu)
 
 
+func _open_home(message: String = "") -> void:
+	var home: Dictionary = game.home_data()
+	_open_modal("%s · 居所与收藏" % str(home["name"]))
+	modal_body.add_child(_art_banner(IslandGroundMap, 135.0))
+	if not message.is_empty():
+		var positive := not ("不能" in message or "不足" in message or "没有" in message or "不可" in message)
+		modal_body.add_child(_make_text(message, Color("9edbb6") if positive else Color("eda69b")))
+	var stats := HBoxContainer.new()
+	stats.add_theme_constant_override("separation", 8)
+	stats.add_child(_wealth_stat("当前金贝", "%d" % game.cash, Color("8ee0b1")))
+	stats.add_child(_wealth_stat("万物陈列", "%d/%d" % [int(home["display_count"]), int(home["display_slots"])], Color("f0d27e")))
+	stats.add_child(_wealth_stat("水族收藏", "%d/%d" % [int(home["aquarium_count"]), int(home["aquarium_slots"])], Color("8fcfda")))
+	stats.add_child(_wealth_stat("人物来访", "%d" % int(home["visits"]), Color("d7b6e8")))
+	modal_body.add_child(stats)
+	modal_body.add_child(_make_text("%s\n居所属于生活消费与收藏，不计入账户财富或净资产，也不提供固定收益。" % str(home["description"]), Color("c7dcda")))
+
+	var upgrade: Dictionary = game.next_home_upgrade()
+	var upgrade_panel := PanelContainer.new()
+	upgrade_panel.add_theme_stylebox_override("panel", _panel_style(Color("17343b"), Color("c2a65f") if bool(upgrade.get("available", false)) else Color("54696c")))
+	var upgrade_box := VBoxContainer.new()
+	upgrade_panel.add_child(upgrade_box)
+	if bool(upgrade.get("complete", false)):
+		upgrade_box.add_child(_make_text("居所已达到四象宅邸", Color("f2d984")))
+		upgrade_box.add_child(_make_text("当前拥有%d个万物陈列槽、%d个水族槽，并可每日邀请一名熟悉人物。" % [int(home["display_slots"]), int(home["aquarium_slots"])], Color("bcd5d2")))
+	else:
+		upgrade_box.add_child(_make_text("下一阶段 · %s" % str(upgrade["name"]), Color("f2d984")))
+		upgrade_box.add_child(_make_text("%s\n费用%d金贝 · 账户财富%d · 永久万物%d种\n扩建后：陈列%d格 · 水族%d格 · 每日来访%d次" % [
+			str(upgrade["description"]), int(upgrade["cost"]), int(upgrade["wealth_required"]), int(upgrade["discoveries_required"]),
+			int(upgrade["display_slots"]), int(upgrade["aquarium_slots"]), int(upgrade["guest_slots"])
+		], Color("bcd5d2")))
+		if not bool(upgrade["available"]):
+			upgrade_box.add_child(_make_text("尚缺：%s" % "；".join(upgrade["reasons"]), Color("d6b18b")))
+		upgrade_box.add_child(_make_button("确认扩建 · 支付%d金贝" % int(upgrade["cost"]), _purchase_home_upgrade, not bool(upgrade["available"])))
+	modal_body.add_child(upgrade_panel)
+
+	modal_body.add_child(_make_text("万物陈列", Color("f1d687")))
+	var display_grid := GridContainer.new()
+	display_grid.columns = 3
+	display_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	display_grid.add_theme_constant_override("h_separation", 8)
+	display_grid.add_theme_constant_override("v_separation", 8)
+	for item_id in game.home_display_items:
+		var card := PanelContainer.new()
+		card.custom_minimum_size = Vector2(225, 174)
+		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		card.add_theme_stylebox_override("panel", _panel_style(Color("17343b"), Color("c2a65f")))
+		var box := VBoxContainer.new()
+		box.alignment = BoxContainer.ALIGNMENT_CENTER
+		card.add_child(box)
+		box.add_child(_item_art(item_id, 86.0))
+		var record: Dictionary = game.discovery_record(item_id)
+		var title := _make_text("%s · %d阶" % [game.item_name(item_id), game.item_tier(item_id)], Color("f2d984"))
+		title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		box.add_child(title)
+		box.add_child(_make_text("首次发现：第%d天 %d/16" % [int(record.get("first_day", 1)), int(record.get("first_tide", 1))], Color("9dbbb8")))
+		box.add_child(_make_button("撤下陈列", _remove_home_display.bind(item_id)))
+		display_grid.add_child(card)
+	for empty_index in range(maxi(0, int(home["display_slots"]) - game.home_display_items.size())):
+		var empty_panel := PanelContainer.new()
+		empty_panel.custom_minimum_size = Vector2(225, 174)
+		empty_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		empty_panel.add_theme_stylebox_override("panel", _panel_style(Color("132b32"), Color("465e62")))
+		var empty_label := _make_text("◇ 空陈列位", Color("718c8f"))
+		empty_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		empty_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		empty_panel.add_child(empty_label)
+		display_grid.add_child(empty_panel)
+	modal_body.add_child(display_grid)
+	if game.home_display_items.size() < game.home_display_capacity():
+		var display_option := OptionButton.new()
+		for item_id in game.discovered_item_ids():
+			if game.home_display_items.has(item_id):
+				continue
+			display_option.add_item("%d阶 · %s" % [game.item_tier(item_id), game.item_name(item_id)])
+			display_option.set_item_metadata(display_option.item_count - 1, item_id)
+		var display_row := HBoxContainer.new()
+		display_row.add_theme_constant_override("separation", 8)
+		display_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		display_row.add_child(display_option)
+		display_row.add_child(_make_button("陈列所选万物", _add_home_display_from_option.bind(display_option), display_option.item_count == 0))
+		modal_body.add_child(display_row)
+	modal_body.add_child(_make_text("陈列只保存图鉴引用，不消耗万物，也不影响造化盆、委托或万象塔。", Color("91adae")))
+
+	modal_body.add_child(_make_text("水族收藏", Color("8fd6df")))
+	if int(home["aquarium_slots"]) <= 0:
+		modal_body.add_child(_make_text("潮木居所开放第一格水族收藏。水族只接收观赏、收藏标签或纪录级鱼获。", Color("91adae")))
+	else:
+		var aquarium_grid := GridContainer.new()
+		aquarium_grid.columns = 2
+		aquarium_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		aquarium_grid.add_theme_constant_override("h_separation", 8)
+		aquarium_grid.add_theme_constant_override("v_separation", 8)
+		for raw_fish in game.home_aquarium_rows():
+			var fish: Dictionary = raw_fish
+			var fish_panel := PanelContainer.new()
+			fish_panel.custom_minimum_size = Vector2(340, 128)
+			fish_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			fish_panel.add_theme_stylebox_override("panel", _panel_style(Color("12343b"), Color("6fb7c2")))
+			var fish_box := VBoxContainer.new()
+			fish_panel.add_child(fish_box)
+			fish_box.add_child(_make_text("%s · %s · %s" % [str(fish["name"]), str(fish.get("size", "标准")), str(fish["rarity"])], Color("b9edf2")))
+			fish_box.add_child(_make_text("第%d天在%s捕获 · 已成为不可变现收藏" % [int(fish.get("caught_day", 1)), str(fish["area_name"])], Color("9dbbb8")))
+			fish_box.add_child(_make_button("确认放流 · 不返还鱼获或金贝", _confirm_release_aquarium.bind(str(fish["catch_id"]))))
+			aquarium_grid.add_child(fish_panel)
+		for empty_index in range(maxi(0, int(home["aquarium_slots"]) - game.home_aquarium.size())):
+			var empty_fish := PanelContainer.new()
+			empty_fish.custom_minimum_size = Vector2(340, 128)
+			empty_fish.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			empty_fish.add_theme_stylebox_override("panel", _panel_style(Color("102a31"), Color("3f6268")))
+			var empty_fish_label := _make_text("≈ 空水族槽 ≈", Color("638a90"))
+			empty_fish_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			empty_fish_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+			empty_fish.add_child(empty_fish_label)
+			aquarium_grid.add_child(empty_fish)
+		modal_body.add_child(aquarium_grid)
+		var candidates: Array = game.aquarium_candidate_rows()
+		if game.home_aquarium.size() < game.home_aquarium_capacity() and not candidates.is_empty():
+			var fish_option := OptionButton.new()
+			for raw_candidate in candidates:
+				var candidate: Dictionary = raw_candidate
+				fish_option.add_item("%s · %s · %s" % [str(candidate["name"]), str(candidate.get("size", "标准")), str(candidate["rarity"])])
+				fish_option.set_item_metadata(fish_option.item_count - 1, str(candidate["catch_id"]))
+			var fish_row := HBoxContainer.new()
+			fish_row.add_theme_constant_override("separation", 8)
+			fish_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			fish_row.add_child(fish_option)
+			fish_row.add_child(_make_button("转入水族 · 不再可出售", _place_home_fish_from_option.bind(fish_option)))
+			modal_body.add_child(fish_row)
+		elif candidates.is_empty():
+			modal_body.add_child(_make_text("鱼获箱中暂无符合条件的鱼。纪录级鱼或带“观赏/收藏”标签的鱼可以转入。", Color("91adae")))
+
+	modal_body.add_child(_make_text("人物来访", Color("d7b6e8")))
+	if game.home_level < 2:
+		modal_body.add_child(_make_text("风灯庭院开放人物来访。每次待客支出30金贝、推进0.5潮刻。", Color("91adae")))
+	else:
+		modal_body.add_child(_make_text("每天最多邀请一名已认识且关系达到熟悉的人物。首次来访关系+2，重复来访不重复加关系。", Color("b9c9cb")))
+		var guest_grid := GridContainer.new()
+		guest_grid.columns = 2
+		guest_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		for raw_guest in game.home_invite_rows():
+			var guest: Dictionary = raw_guest
+			var label := "%s · %s%s" % [
+				str(guest["name"]), str(guest["relationship"]),
+				" · 首次来访" if bool(guest["first_visit"]) else " · 来过居所"
+			]
+			if not bool(guest["available"]):
+				label += "\n%s" % "；".join(guest["reasons"])
+			var guest_button := _make_button(label, _invite_home_guest.bind(str(guest["npc_id"])), not bool(guest["available"]))
+			guest_button.custom_minimum_size.y = 58
+			guest_grid.add_child(guest_button)
+		modal_body.add_child(guest_grid)
+
+	var finale: Dictionary = game.finale_progress()
+	modal_body.add_child(HSeparator.new())
+	modal_body.add_child(_make_text("归潮盛典见证 %d/%d · %s" % [
+		int(finale["completed"]), int(finale["total"]),
+		"已经完成，可继续游玩" if game.finale_completed else "在万象塔查看完整条件"
+	], Color("f2d984")))
+	modal_body.add_child(_make_button("查看万象塔与归潮盛典", _open_tower))
+	modal_body.add_child(_make_button("返回休息与存档", _open_bed))
+
+
+func _purchase_home_upgrade() -> void:
+	var result: Dictionary = game.purchase_home_upgrade()
+	_open_home(str(result.get("text", "扩建未完成。")))
+
+
+func _add_home_display_from_option(option: OptionButton) -> void:
+	if option == null or option.item_count <= 0:
+		return
+	var result: Dictionary = game.add_home_display(str(option.get_selected_metadata()))
+	_open_home(str(result.get("text", "陈列未更新。")))
+
+
+func _remove_home_display(item_id: String) -> void:
+	var result: Dictionary = game.remove_home_display(item_id)
+	_open_home(str(result.get("text", "陈列未更新。")))
+
+
+func _place_home_fish_from_option(option: OptionButton) -> void:
+	if option == null or option.item_count <= 0:
+		return
+	var result: Dictionary = game.place_fish_in_aquarium(str(option.get_selected_metadata()))
+	_open_home(str(result.get("text", "水族收藏未更新。")))
+
+
+func _confirm_release_aquarium(catch_id: String) -> void:
+	var selected: Dictionary = {}
+	for raw_fish in game.home_aquarium_rows():
+		if str(raw_fish.get("catch_id", "")) == catch_id:
+			selected = raw_fish
+			break
+	if selected.is_empty():
+		_open_home("水族箱中已经没有这条收藏。")
+		return
+	_open_modal("确认放流")
+	modal_body.add_child(_make_text("%s（%s）将被放归海中。" % [str(selected["name"]), str(selected.get("size", "标准"))], Color("b9edf2")))
+	modal_body.add_child(_make_text("放流不可撤销：不会回到鱼获箱，不能出售或交付订单，也不返还金贝。", Color("eda69b")))
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	var confirm := _make_button("确认放流", _release_aquarium_fish.bind(catch_id))
+	confirm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(confirm)
+	var cancel := _make_button("保留收藏", _open_home)
+	cancel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(cancel)
+	modal_body.add_child(row)
+
+
+func _release_aquarium_fish(catch_id: String) -> void:
+	var result: Dictionary = game.release_aquarium_fish(catch_id)
+	_open_home(str(result.get("text", "放流未完成。")))
+
+
+func _invite_home_guest(npc_id: String) -> void:
+	var result: Dictionary = game.invite_npc_home(npc_id)
+	_show_result(
+		"居所来访",
+		"%s%s" % [
+			str(result.get("text", "邀请未完成。")),
+			"\n\n世界已进入日终停驻，请休息到明天。" if game.day_end_pending else ""
+		],
+		_open_home
+	)
+
+
+func _run_finale() -> void:
+	game.save_game("user://saves/activity_finale.json", _world_save_state(), true)
+	var result: Dictionary = game.complete_finale()
+	if not bool(result.get("ok", false)):
+		_show_result("归潮盛典", str(result.get("text", "盛典尚未开放。")), _open_tower)
+		return
+	_show_result(
+		"归潮盛典 · 万象仍在生长",
+		"%s\n\n%s\n\n所有正式玩法、资产、人物关系和存档都将继续保留。" % [
+			str(result.get("text", "")), _finale_summary_text(result.get("summary", {}))
+		],
+		_open_tower
+	)
+
+
+func _finale_summary_text(summary: Dictionary) -> String:
+	if summary.is_empty():
+		return "塔中还没有归潮盛典记录。"
+	var display_names: Array[String] = []
+	for raw_item_id in summary.get("display_items", []):
+		display_names.append(game.item_name(str(raw_item_id)))
+	var fish_names: Array[String] = []
+	for raw_species_id in summary.get("aquarium_species", []):
+		fish_names.append(str(game.FISH_SPECIES.get(str(raw_species_id), {}).get("name", raw_species_id)))
+	return "第%d天第%d潮刻，%s成为你在岛上的居所。\n陈列：%s\n水族：%s\n来访：%s\n已记录牌会%d场、赛事%d场、鱼铺成交%d笔；当时账户财富%d金贝。" % [
+		int(summary.get("completed_day", summary.get("started_day", 1))),
+		int(summary.get("completed_tide", summary.get("started_tide", 1))),
+		str(summary.get("home_name", "居所")),
+		"、".join(display_names) if not display_names.is_empty() else "无",
+		"、".join(fish_names) if not fish_names.is_empty() else "无",
+		"、".join(summary.get("guest_names", [])) if not summary.get("guest_names", []).is_empty() else "无",
+		int(summary.get("poker_sessions", 0)), int(summary.get("races", 0)),
+		int(summary.get("fish_sales", 0)), int(summary.get("account_wealth", 0))
+	]
+
+
 func _open_bed() -> void:
-	_open_modal("漂流小屋")
-	modal_body.add_child(_make_text("这里可以保存、查看日终状态并休息。睡眠会结束今天，生成并固定次日天气、风向与日程。"))
+	var home: Dictionary = game.home_data()
+	_open_modal(str(home["name"]))
+	modal_body.add_child(_make_text("这里可以保存、查看日终状态、管理居所并休息。睡眠会结束今天，生成并固定次日天气、风向与日程。"))
 	modal_body.add_child(_make_text("当前：第%d天%s第%d潮刻 · %s · %s" % [game.day, game.phase_name(), game.tide, game.weather, game.wind_direction], Color("f0d27e")))
+	modal_body.add_child(_make_text("居所：%s · 万物陈列%d/%d · 水族收藏%d/%d · 来访记录%d次" % [
+		str(home["name"]), int(home["display_count"]), int(home["display_slots"]),
+		int(home["aquarium_count"]), int(home["aquarium_slots"]), int(home["visits"])
+	], Color("9edbb6")))
 	modal_body.add_child(_make_text("睡眠结算顺序：三家商会经营与分红 → 次日天气/鱼市/赛事 → 新报价 → %d笔隔夜订单撮合。" % game.share_pending_orders.size(), Color("d9c47f")))
 	var save_row := HBoxContainer.new()
 	save_row.add_theme_constant_override("separation", 8)
@@ -1236,6 +1508,7 @@ func _open_bed() -> void:
 	load_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	save_row.add_child(load_button)
 	modal_body.add_child(save_row)
+	modal_body.add_child(_make_button("居所、陈列、水族与来访", _open_home))
 	modal_body.add_child(_make_button("调整日长与主动等待", _open_time_menu))
 	modal_body.add_child(_make_button("睡到明天", _sleep))
 
@@ -1614,6 +1887,14 @@ func _open_news() -> void:
 			"你的祝胜券命中" if bool(latest_race.get("won", false)) else "你的祝胜券未中"
 		], Color("9edfc4")))
 	modal_body.add_child(_make_button("查看今日赛程与票池", _open_race))
+	modal_body.add_child(HSeparator.new())
+	var finale: Dictionary = game.finale_progress()
+	modal_body.add_child(_make_text("万象塔 · 归潮盛典", Color("f0d27e")))
+	modal_body.add_child(_make_text(
+		"归潮盛典已完成，岛上生活仍在继续。" if game.finale_completed else "岛上生活见证 %d/%d，全部完成后由万象塔举行盛典。" % [int(finale["completed"]), int(finale["total"])],
+		Color("9edbb6") if game.finale_completed else Color("c7dcda")
+	))
+	modal_body.add_child(_make_button("查看万象塔与长期目标", _open_tower))
 
 
 func _open_share_market(message: String = "") -> void:
@@ -1767,6 +2048,32 @@ func _open_tower() -> void:
 		], Color("9edbb6")))
 		if not str(goal.get("anchor_id", "")).is_empty():
 			modal_body.add_child(_make_button("把%s放入造化盆左侧" % str(goal.get("anchor_name", "")), _open_synthesis_with_item.bind(str(goal.get("anchor_id", "")), "left")))
+	var finale: Dictionary = game.finale_progress()
+	modal_body.add_child(HSeparator.new())
+	modal_body.add_child(_make_text("归潮盛典 · 岛上生活见证 %d/%d" % [int(finale["completed"]), int(finale["total"])], Color("f0d27e")))
+	for raw_requirement in finale["requirements"]:
+		var requirement: Dictionary = raw_requirement
+		modal_body.add_child(_make_text("%s %s · %s" % [
+			"✓" if bool(requirement["complete"]) else "◇",
+			str(requirement["name"]), str(requirement["description"])
+		], Color("9edbb6") if bool(requirement["complete"]) else Color("91a4a5")))
+	if game.finale_completed:
+		modal_body.add_child(_make_text(_finale_summary_text(game.finale_summary), Color("f4df8a")))
+		modal_body.add_child(_make_text("归潮之后，存档与全部正式玩法继续开放。", Color("9edbb6")))
+		for raw_postgame in game.postgame_goals():
+			var postgame: Dictionary = raw_postgame
+			modal_body.add_child(_make_text("%s %s · %d/%d" % [
+				"✓" if bool(postgame["complete"]) else "◇", str(postgame["name"]),
+				int(postgame["current"]), int(postgame["target"])
+			], Color("9edbb6") if bool(postgame["complete"]) else Color("a9c4c0")))
+	else:
+		modal_body.add_child(_make_button(
+			"举行归潮盛典 · 1潮刻" if bool(finale["complete"]) else "见证尚未完整",
+			_run_finale,
+			not bool(finale["complete"]) or game.day_end_pending
+		))
+		if not bool(finale["complete"]):
+			modal_body.add_child(_make_button("返回居所完善生活见证", _open_home))
 	modal_body.add_child(_make_button("查看万物图鉴", _open_collection))
 	modal_body.add_child(_make_button("前往造化盆", _open_synthesis))
 

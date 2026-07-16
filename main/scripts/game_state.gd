@@ -9,6 +9,7 @@ const SynthesisCatalog = preload("res://scripts/synthesis_catalog.gd")
 const FishCatalog = preload("res://scripts/fish_catalog.gd")
 const NpcCatalog = preload("res://scripts/npc_catalog.gd")
 const ShareMarketCatalog = preload("res://scripts/share_catalog.gd")
+const HomeCatalog = preload("res://scripts/home_catalog.gd")
 const ITEMS := SynthesisCatalog.ITEMS
 const RECIPES := SynthesisCatalog.RECIPES
 const FISH_SPECIES := FishCatalog.SPECIES
@@ -16,6 +17,7 @@ const DIVE_AREAS := FishCatalog.AREAS
 const NPCS := NpcCatalog.CORE
 const ENVIRONMENT_RESIDENTS := NpcCatalog.RESIDENTS
 const SHARE_COMPANIES := ShareMarketCatalog.COMPANIES
+const HOME_LEVELS := HomeCatalog.LEVELS
 
 const INITIAL_DISCOVERIES := ["water", "fire", "earth"]
 const MAX_SYNTHESIS_TIER := 4
@@ -82,7 +84,7 @@ const TIME_STATE_UI := "ui_paused"
 const TIME_STATE_ACTIVITY := "activity_snapshot"
 const TIME_STATE_FAST_FORWARD := "fast_forward"
 const TIME_STATE_DAY_END := "day_end_hold"
-const SAVE_VERSION := 6
+const SAVE_VERSION := 7
 const MANUAL_SAVE_PATH := "user://saves/manual_save.json"
 const POKER_TIERS := [
 	{"name": "潮边小桌", "buy_in": 80, "wealth_required": 0, "small_blind": 1, "big_blind": 2, "description": "认识规则与人物，输赢幅度较小"},
@@ -202,6 +204,15 @@ var share_order_sequence: int = 0
 var share_trade_history: Array = []
 var share_price_history: Array = []
 var share_dividend_history: Array = []
+var home_level: int = 0
+var home_display_items: Array[String] = []
+var home_aquarium: Array = []
+var home_guest_history: Array = []
+var home_last_invite_day: int = 0
+var finale_completed: bool = false
+var finale_day: int = 0
+var finale_tide: int = 0
+var finale_summary := {}
 var poker_completed: bool = false
 var normal_poker_completed: bool = false
 var aqiu_request_active: bool = false
@@ -335,6 +346,15 @@ func build_save_data(world_state: Dictionary = {}) -> Dictionary:
 			"share_trade_history": share_trade_history.duplicate(true),
 			"share_price_history": share_price_history.duplicate(true),
 			"share_dividend_history": share_dividend_history.duplicate(true),
+			"home_level": home_level,
+			"home_display_items": home_display_items.duplicate(),
+			"home_aquarium": home_aquarium.duplicate(true),
+			"home_guest_history": home_guest_history.duplicate(true),
+			"home_last_invite_day": home_last_invite_day,
+			"finale_completed": finale_completed,
+			"finale_day": finale_day,
+			"finale_tide": finale_tide,
+			"finale_summary": finale_summary.duplicate(true),
 			"poker_completed": poker_completed,
 			"normal_poker_completed": normal_poker_completed,
 			"poker_session_sequence": poker_session_sequence,
@@ -504,6 +524,19 @@ func restore_save_data(data: Dictionary) -> Dictionary:
 	share_trade_history = saved.get("share_trade_history", []).duplicate(true)
 	share_price_history = saved.get("share_price_history", []).duplicate(true)
 	share_dividend_history = saved.get("share_dividend_history", []).duplicate(true)
+	home_level = clampi(int(saved.get("home_level", 0)), 0, HomeCatalog.max_level())
+	home_display_items.clear()
+	for raw_item_id in saved.get("home_display_items", []):
+		var item_id := str(raw_item_id)
+		if not home_display_items.has(item_id):
+			home_display_items.append(item_id)
+	home_aquarium = saved.get("home_aquarium", []).duplicate(true)
+	home_guest_history = saved.get("home_guest_history", []).duplicate(true)
+	home_last_invite_day = maxi(0, int(saved.get("home_last_invite_day", 0)))
+	finale_completed = bool(saved.get("finale_completed", false))
+	finale_day = maxi(0, int(saved.get("finale_day", 0)))
+	finale_tide = clampi(int(saved.get("finale_tide", 0)), 0, 16)
+	finale_summary = saved.get("finale_summary", {}).duplicate(true)
 	poker_completed = bool(saved.get("poker_completed", false))
 	normal_poker_completed = bool(saved.get("normal_poker_completed", false))
 	poker_session_sequence = maxi(0, int(saved.get("poker_session_sequence", 0)))
@@ -519,6 +552,7 @@ func restore_save_data(data: Dictionary) -> Dictionary:
 	_initialize_npc_state()
 	_initialize_discovery_records()
 	_sync_tower_milestones(false)
+	_repair_home_state()
 	ultimate_created = bool(saved.get("ultimate_created", false))
 	if bool(tower_milestones.get("fourfold_observatory", false)):
 		ultimate_created = true
@@ -564,10 +598,10 @@ func _validate_save_data(data: Dictionary) -> Dictionary:
 	if not data.get("state", {}) is Dictionary or not data.get("world", {}) is Dictionary:
 		return {"ok": false, "text": "存档结构损坏，未修改当前进度。"}
 	var saved: Dictionary = data["state"]
-	for key in ["daily_schedule", "discovered", "discovery_records", "tower_milestones", "attempted_pairs", "relationships", "memories", "known_npcs", "npc_topic_reads", "npc_request_states", "npc_shared_creations", "npc_shared_fish", "npc_deep_talk_days", "npc_talk_counts", "npc_memory_rewarded", "dive_state", "marine_discoveries", "marine_size_records", "fish_market_quotes", "fish_market_stock", "fish_market_demand", "fish_market_reasons", "processed_fish_sales", "dive_equipment", "last_dive_result", "share_quotes", "share_previous_quotes", "share_next_quotes", "share_company_reports", "share_lots"]:
+	for key in ["daily_schedule", "discovered", "discovery_records", "tower_milestones", "attempted_pairs", "relationships", "memories", "known_npcs", "npc_topic_reads", "npc_request_states", "npc_shared_creations", "npc_shared_fish", "npc_deep_talk_days", "npc_talk_counts", "npc_memory_rewarded", "dive_state", "marine_discoveries", "marine_size_records", "fish_market_quotes", "fish_market_stock", "fish_market_demand", "fish_market_reasons", "processed_fish_sales", "dive_equipment", "last_dive_result", "share_quotes", "share_previous_quotes", "share_next_quotes", "share_company_reports", "share_lots", "finale_summary"]:
 		if saved.has(key) and not saved[key] is Dictionary:
 			return {"ok": false, "text": "存档字段%s损坏，未修改当前进度。" % key}
-	for key in ["time_event_log", "recent_synthesis_pairs", "wealth_history", "poker_npc_wallets", "poker_npc_brought", "poker_npc_present", "poker_session_history", "poker_invitations", "race_events", "race_history", "fish_catch_inventory", "fish_market_orders", "fish_market_history", "fish_market_transactions", "share_pending_orders", "share_trade_history", "share_price_history", "share_dividend_history"]:
+	for key in ["time_event_log", "recent_synthesis_pairs", "wealth_history", "poker_npc_wallets", "poker_npc_brought", "poker_npc_present", "poker_session_history", "poker_invitations", "race_events", "race_history", "fish_catch_inventory", "fish_market_orders", "fish_market_history", "fish_market_transactions", "share_pending_orders", "share_trade_history", "share_price_history", "share_dividend_history", "home_display_items", "home_aquarium", "home_guest_history"]:
 		if saved.has(key) and not saved[key] is Array:
 			return {"ok": false, "text": "存档字段%s损坏，未修改当前进度。" % key}
 	return {"ok": true}
@@ -685,6 +719,405 @@ func suggested_reserve() -> int:
 	if wealth >= 3000:
 		return 1000
 	return 200
+
+
+func home_data() -> Dictionary:
+	var result := HomeCatalog.level_data(home_level)
+	result["display_count"] = home_display_items.size()
+	result["aquarium_count"] = home_aquarium.size()
+	result["visits"] = home_guest_history.size()
+	return result
+
+
+func next_home_upgrade() -> Dictionary:
+	if home_level >= HomeCatalog.max_level():
+		var current := home_data()
+		current["complete"] = true
+		current["available"] = false
+		current["reasons"] = ["居所已经达到最高等级。"]
+		return current
+	var target := HomeCatalog.level_data(home_level + 1)
+	var reasons: Array[String] = []
+	if cash < int(target["cost"]):
+		reasons.append("还需%d可用金贝" % (int(target["cost"]) - cash))
+	if account_wealth() < int(target["wealth_required"]):
+		reasons.append("账户财富需达到%d金贝" % int(target["wealth_required"]))
+	if discovered_item_ids().size() < int(target["discoveries_required"]):
+		reasons.append("永久万物需达到%d种" % int(target["discoveries_required"]))
+	target["complete"] = false
+	target["available"] = reasons.is_empty()
+	target["reasons"] = reasons
+	return target
+
+
+func purchase_home_upgrade() -> Dictionary:
+	var target := next_home_upgrade()
+	if bool(target.get("complete", false)):
+		return {"ok": false, "text": "四象宅邸已经完成，不需要继续扩建。"}
+	if not bool(target.get("available", false)):
+		return {"ok": false, "text": "暂时不能扩建%s：%s。" % [str(target.get("name", "居所")), "；".join(target.get("reasons", []))]}
+	var cost := int(target["cost"])
+	if cash < cost:
+		return {"ok": false, "text": "当前可用金贝不足，未执行扩建。"}
+	cash -= cost
+	home_level = int(target["level"])
+	var memory_text := "你把漂流小屋扩建为%s，开始为岛上生活留下长期空间。" % str(target["name"])
+	for npc_id in ["granny", "mia", "shopkeeper"]:
+		add_npc_memory(npc_id, {
+			"memory_id": "home_level_%d" % home_level,
+			"type": "home_upgrade",
+			"importance": 3 + home_level,
+			"persistent": home_level >= 2,
+			"summary": memory_text,
+			"relationship_delta": 0,
+			"effects": {"dialogue_warmth": 1, "private_topic_access": 1 if home_level >= 2 else 0},
+		})
+	_record_wealth("居所改善 · %s" % str(target["name"]))
+	changed.emit()
+	return {
+		"ok": true,
+		"level": home_level,
+		"cost": cost,
+		"text": "已支付%d金贝，将居所扩建为%s。陈列槽%d格，水族槽%d格。" % [
+			cost, str(target["name"]), int(target["display_slots"]), int(target["aquarium_slots"])
+		],
+	}
+
+
+func home_display_capacity() -> int:
+	return int(HomeCatalog.level_data(home_level)["display_slots"])
+
+
+func add_home_display(item_id: String) -> Dictionary:
+	if not is_discovered(item_id) or not ITEMS.has(item_id):
+		return {"ok": false, "text": "只能陈列已经永久发现的万物。"}
+	if home_display_items.has(item_id):
+		return {"ok": false, "text": "%s已经在居所中陈列。" % item_name(item_id)}
+	if home_display_items.size() >= home_display_capacity():
+		return {"ok": false, "text": "万物陈列槽已经用满，先撤下一项或扩建居所。"}
+	home_display_items.append(item_id)
+	changed.emit()
+	return {"ok": true, "text": "已陈列%s。万物仍永久保留在图鉴与造化盆中。" % item_name(item_id)}
+
+
+func remove_home_display(item_id: String) -> Dictionary:
+	var index := home_display_items.find(item_id)
+	if index < 0:
+		return {"ok": false, "text": "居所中没有这项陈列。"}
+	home_display_items.remove_at(index)
+	changed.emit()
+	return {"ok": true, "text": "已撤下%s；永久发现状态没有变化。" % item_name(item_id)}
+
+
+func home_aquarium_capacity() -> int:
+	return int(HomeCatalog.level_data(home_level)["aquarium_slots"])
+
+
+func fish_is_aquarium_eligible(catch_record: Dictionary) -> bool:
+	var species_id := str(catch_record.get("species_id", ""))
+	if not FISH_SPECIES.has(species_id):
+		return false
+	var tags: Array = FISH_SPECIES[species_id].get("tags", [])
+	return str(catch_record.get("size", "")) == "纪录级" or tags.has("观赏") or tags.has("收藏")
+
+
+func aquarium_candidate_rows() -> Array:
+	var rows: Array = []
+	for raw_catch in fish_catch_inventory:
+		if not raw_catch is Dictionary:
+			continue
+		var catch_record: Dictionary = raw_catch
+		if not fish_is_aquarium_eligible(catch_record):
+			continue
+		var species_id := str(catch_record.get("species_id", ""))
+		var row := catch_record.duplicate(true)
+		row["name"] = FishCatalog.species_name(species_id)
+		row["rarity"] = str(FISH_SPECIES.get(species_id, {}).get("rarity", "普通"))
+		row["area_name"] = FishCatalog.area_name(str(catch_record.get("source_area", catch_record.get("area_id", ""))))
+		rows.append(row)
+	rows.sort_custom(func(a, b):
+		if str(a.get("size", "")) != str(b.get("size", "")):
+			return str(a.get("size", "")) == "纪录级"
+		return int(FISH_SPECIES.get(str(a.get("species_id", "")), {}).get("base_value", 0)) > int(FISH_SPECIES.get(str(b.get("species_id", "")), {}).get("base_value", 0))
+	)
+	return rows
+
+
+func home_aquarium_rows() -> Array:
+	var rows: Array = []
+	for raw_catch in home_aquarium:
+		if not raw_catch is Dictionary:
+			continue
+		var catch_record: Dictionary = raw_catch
+		var species_id := str(catch_record.get("species_id", ""))
+		var row := catch_record.duplicate(true)
+		row["name"] = FishCatalog.species_name(species_id)
+		row["rarity"] = str(FISH_SPECIES.get(species_id, {}).get("rarity", "普通"))
+		row["area_name"] = FishCatalog.area_name(str(catch_record.get("source_area", catch_record.get("area_id", ""))))
+		rows.append(row)
+	return rows
+
+
+func place_fish_in_aquarium(catch_id: String) -> Dictionary:
+	if home_aquarium_capacity() <= 0:
+		return {"ok": false, "text": "漂流小屋还没有水族箱；扩建为潮木居所后开放。"}
+	if home_aquarium.size() >= home_aquarium_capacity():
+		return {"ok": false, "text": "水族槽已经用满，先放流一条收藏或继续扩建。"}
+	var selected: Dictionary = {}
+	var retained: Array = []
+	for raw_catch in fish_catch_inventory:
+		var catch_record: Dictionary = raw_catch
+		if selected.is_empty() and str(catch_record.get("catch_id", "")) == catch_id:
+			selected = catch_record.duplicate(true)
+		else:
+			retained.append(catch_record)
+	if selected.is_empty():
+		return {"ok": false, "text": "鱼获箱中已经没有这条鱼。"}
+	if not fish_is_aquarium_eligible(selected):
+		return {"ok": false, "text": "水族箱只接收观赏、收藏标签或纪录级鱼获。"}
+	fish_catch_inventory = retained
+	selected["aquarium_day"] = day
+	selected["aquarium_tide"] = tide
+	home_aquarium.append(selected)
+	pending_fish_sales.clear()
+	_record_wealth("居所水族收藏 · %s" % FishCatalog.species_name(str(selected["species_id"])))
+	changed.emit()
+	return {
+		"ok": true,
+		"text": "已将%s（%s）转入水族收藏。它不再参与出售、订单或净资产估值。" % [
+			FishCatalog.species_name(str(selected["species_id"])), str(selected.get("size", "标准"))
+		],
+	}
+
+
+func release_aquarium_fish(catch_id: String) -> Dictionary:
+	for index in range(home_aquarium.size()):
+		var catch_record: Dictionary = home_aquarium[index]
+		if str(catch_record.get("catch_id", "")) != catch_id:
+			continue
+		home_aquarium.remove_at(index)
+		changed.emit()
+		return {
+			"ok": true,
+			"text": "已将%s放归海中。水族槽已经腾出，鱼获不会回到鱼获箱，也不会返还金贝。" % FishCatalog.species_name(str(catch_record.get("species_id", ""))),
+		}
+	return {"ok": false, "text": "水族箱中没有这条收藏。"}
+
+
+func home_invite_rows() -> Array:
+	var rows: Array = []
+	for npc_id in NpcCatalog.core_ids():
+		var profile := npc_profile(npc_id)
+		var known := bool(known_npcs.get(npc_id, false))
+		var relationship := int(relationships.get(npc_id, 0))
+		var reasons: Array[String] = []
+		if home_level < 2:
+			reasons.append("需要风灯庭院")
+		if not known:
+			reasons.append("尚未认识")
+		if relationship < 10:
+			reasons.append("关系需达到熟悉")
+		if home_last_invite_day == day:
+			reasons.append("今日已经待客")
+		if day_end_pending:
+			reasons.append("日终停驻")
+		if cash < HomeCatalog.GUEST_COST:
+			reasons.append("需要%d金贝" % HomeCatalog.GUEST_COST)
+		var first_visit := true
+		for raw_visit in home_guest_history:
+			if raw_visit is Dictionary and str(raw_visit.get("npc_id", "")) == npc_id:
+				first_visit = false
+				break
+		rows.append({
+			"npc_id": npc_id,
+			"name": str(profile.get("name", npc_id)),
+			"relationship": relationship_state(npc_id),
+			"first_visit": first_visit,
+			"available": reasons.is_empty(),
+			"reasons": reasons,
+		})
+	return rows
+
+
+func invite_npc_home(npc_id: String) -> Dictionary:
+	var selected: Dictionary = {}
+	for raw_row in home_invite_rows():
+		if str(raw_row.get("npc_id", "")) == npc_id:
+			selected = raw_row
+			break
+	if selected.is_empty():
+		return {"ok": false, "text": "这名人物当前不能接受居所邀请。"}
+	if not bool(selected.get("available", false)):
+		return {"ok": false, "text": "暂时不能邀请%s：%s。" % [str(selected.get("name", npc_id)), "；".join(selected.get("reasons", []))]}
+	cash -= HomeCatalog.GUEST_COST
+	var first_visit := bool(selected.get("first_visit", false))
+	var visit := {
+		"npc_id": npc_id,
+		"name": str(selected["name"]),
+		"day": day,
+		"tide": tide,
+		"home_level": home_level,
+		"first_visit": first_visit,
+	}
+	home_guest_history.push_front(visit)
+	if home_guest_history.size() > 32:
+		home_guest_history.resize(32)
+	home_last_invite_day = day
+	add_npc_memory(npc_id, {
+		"memory_id": "home_first_visit" if first_visit else "home_visit_day_%d" % day,
+		"type": "home_visit",
+		"importance": 4 if first_visit else 2,
+		"persistent": first_visit,
+		"summary": "%s来到你的%s做客，看过了万物陈列与水族收藏。" % [str(selected["name"]), str(home_data()["name"])],
+		"relationship_delta": 2 if first_visit else 0,
+		"effects": {"dialogue_warmth": 2, "private_topic_access": 1 if first_visit else 0},
+	})
+	set_time_pause("home_guest", true, TIME_STATE_ACTIVITY)
+	advance_time_fraction(HomeCatalog.GUEST_TIME_COST, "居所待客 · %s" % str(selected["name"]))
+	set_time_pause("home_guest", false)
+	_record_wealth("居所待客 · %s" % str(selected["name"]))
+	changed.emit()
+	return {
+		"ok": true,
+		"first_visit": first_visit,
+		"time_cost": HomeCatalog.GUEST_TIME_COST,
+		"cost": HomeCatalog.GUEST_COST,
+		"text": "%s在%s坐了半个潮刻。支付待客支出%d金贝。%s" % [
+			str(selected["name"]), str(home_data()["name"]), HomeCatalog.GUEST_COST,
+			"这是首次来访，关系增加2。" if first_visit else "重复来访不会再次增加关系。",
+		],
+	}
+
+
+func finale_progress() -> Dictionary:
+	var requirements: Array = [
+		{"id": "tower", "name": "万象见证", "description": "完成72种万物与69条稳定关系", "complete": ultimate_created},
+		{"id": "home", "name": "安居见证", "description": "居所达到风灯庭院", "complete": home_level >= 2},
+		{"id": "display", "name": "陈列见证", "description": "陈列至少3项永久万物", "complete": home_display_items.size() >= 3},
+		{"id": "aquarium", "name": "海生见证", "description": "水族箱收藏至少1条合格鱼获", "complete": home_aquarium.size() >= 1},
+		{"id": "guest", "name": "人情见证", "description": "完成至少1次人物来访", "complete": not home_guest_history.is_empty()},
+		{"id": "poker", "name": "牌会见证", "description": "完成至少1场非教学牌会", "complete": normal_poker_completed},
+		{"id": "race", "name": "逐风见证", "description": "完成至少1场正式逐风赛事", "complete": not race_history.is_empty()},
+		{"id": "livelihood", "name": "生计见证", "description": "完成至少1笔鱼铺出售", "complete": not fish_market_transactions.is_empty()},
+	]
+	var completed := 0
+	for requirement in requirements:
+		if bool(requirement["complete"]):
+			completed += 1
+	return {
+		"complete": completed == requirements.size(),
+		"completed": completed,
+		"total": requirements.size(),
+		"requirements": requirements,
+		"finale_completed": finale_completed,
+	}
+
+
+func complete_finale() -> Dictionary:
+	if finale_completed:
+		return {"ok": false, "repeat": true, "text": "归潮盛典已经完成。塔中保留着当日记录，你仍可继续留在岛上。", "summary": finale_summary.duplicate(true)}
+	if day_end_pending:
+		return {"ok": false, "text": "世界已经日终停驻，先休息到明天再举行盛典。"}
+	var progress := finale_progress()
+	if not bool(progress["complete"]):
+		return {"ok": false, "text": "归潮盛典还缺少%d项见证。" % (int(progress["total"]) - int(progress["completed"])), "progress": progress}
+	var invited_names: Array[String] = []
+	for raw_visit in home_guest_history:
+		if raw_visit is Dictionary:
+			var guest_name := str(raw_visit.get("name", ""))
+			if not guest_name.is_empty() and not invited_names.has(guest_name):
+				invited_names.append(guest_name)
+	var summary := {
+		"started_day": day,
+		"started_tide": tide,
+		"home_name": str(home_data()["name"]),
+		"display_items": home_display_items.duplicate(),
+		"aquarium_species": home_aquarium.map(func(catch_record): return str(catch_record.get("species_id", ""))),
+		"guest_names": invited_names,
+		"poker_sessions": poker_session_history.size(),
+		"races": race_history.size(),
+		"fish_sales": fish_market_transactions.size(),
+		"account_wealth": account_wealth(),
+		"net_worth": net_worth(),
+	}
+	set_time_pause("finale", true, TIME_STATE_ACTIVITY)
+	advance_time_fraction(HomeCatalog.FINALE_TIME_COST, "归潮盛典")
+	set_time_pause("finale", false)
+	finale_completed = true
+	finale_day = day
+	finale_tide = tide
+	summary["completed_day"] = finale_day
+	summary["completed_tide"] = finale_tide
+	finale_summary = summary
+	for npc_id in NpcCatalog.core_ids():
+		add_npc_memory(npc_id, {
+			"memory_id": "returning_tide_finale",
+			"type": "finale",
+			"importance": 5,
+			"persistent": true,
+			"summary": "第%d天，你在万象塔举行归潮盛典，把万物、海生、居所和岛上经历留作公开见证。" % finale_day,
+			"relationship_delta": 0,
+			"effects": {"dialogue_warmth": 3, "private_topic_access": 2},
+		})
+	_record_wealth("归潮盛典", true)
+	changed.emit()
+	return {"ok": true, "time_cost": HomeCatalog.FINALE_TIME_COST, "summary": finale_summary.duplicate(true), "text": "归潮盛典已经完成。你可以继续留在岛上，所有正式玩法仍然开放。"}
+
+
+func postgame_goals() -> Array:
+	var trust_count := 0
+	for npc_id in NpcCatalog.core_ids():
+		if relationship_state(npc_id) == "信任":
+			trust_count += 1
+	return [
+		{"name": "完善居所", "current": home_level, "target": HomeCatalog.max_level(), "complete": home_level >= HomeCatalog.max_level()},
+		{"name": "填满当前万物陈列", "current": home_display_items.size(), "target": home_display_capacity(), "complete": home_display_items.size() >= home_display_capacity()},
+		{"name": "建立全部海生记录", "current": marine_discoveries.size(), "target": FISH_SPECIES.size(), "complete": marine_discoveries.size() >= FISH_SPECIES.size()},
+		{"name": "成为岛之名流", "current": account_wealth(), "target": 1000000, "complete": account_wealth() >= 1000000},
+		{"name": "获得三名人物信任", "current": trust_count, "target": 3, "complete": trust_count >= 3},
+	]
+
+
+func _repair_home_state() -> void:
+	home_level = clampi(home_level, 0, HomeCatalog.max_level())
+	var repaired_display: Array[String] = []
+	for item_id in home_display_items:
+		if is_discovered(item_id) and ITEMS.has(item_id) and not repaired_display.has(item_id):
+			repaired_display.append(item_id)
+			if repaired_display.size() >= home_display_capacity():
+				break
+	home_display_items = repaired_display
+	var repaired_aquarium: Array = []
+	var aquarium_ids := {}
+	for raw_catch in home_aquarium:
+		if not raw_catch is Dictionary:
+			continue
+		var catch_record: Dictionary = raw_catch
+		var catch_id := str(catch_record.get("catch_id", ""))
+		if catch_id.is_empty() or aquarium_ids.has(catch_id) or not fish_is_aquarium_eligible(catch_record):
+			continue
+		aquarium_ids[catch_id] = true
+		repaired_aquarium.append(catch_record.duplicate(true))
+		if repaired_aquarium.size() >= home_aquarium_capacity():
+			break
+	home_aquarium = repaired_aquarium
+	if not aquarium_ids.is_empty():
+		var repaired_inventory: Array = []
+		for raw_catch in fish_catch_inventory:
+			if raw_catch is Dictionary and not aquarium_ids.has(str(raw_catch.get("catch_id", ""))):
+				repaired_inventory.append(raw_catch)
+		fish_catch_inventory = repaired_inventory
+	var repaired_visits: Array = []
+	for raw_visit in home_guest_history:
+		if raw_visit is Dictionary and NPCS.has(str(raw_visit.get("npc_id", ""))):
+			repaired_visits.append(raw_visit.duplicate(true))
+			if repaired_visits.size() >= 32:
+				break
+	home_guest_history = repaired_visits
+	if not finale_completed:
+		finale_day = 0
+		finale_tide = 0
+		finale_summary.clear()
 
 
 func fishing_remaining_today() -> int:
@@ -1848,6 +2281,8 @@ func finish_dive(forced_surface: bool = false) -> Dictionary:
 			"caught_day": day,
 			"caught_tide": tide,
 			"source_area": area_id,
+			"caught_weather": weather,
+			"caught_phase": phase_name(),
 			"scene_seed": str(dive_scene_seed)
 		}
 		fish_catch_inventory.append(catch_record)
