@@ -153,7 +153,23 @@ func _queue_rebuild(pulse_center: bool = false, strong_pulse: bool = false) -> v
 	if rebuild_queued:
 		return
 	rebuild_queued = true
-	call_deferred("_flush_queued_rebuild")
+	# call_deferred() alone is not a sufficient lifetime boundary here. The
+	# request can originate from BaseButton.pressed or Tween.finished and Godot
+	# 4.7 may drain deferred calls before the native signal dispatch has fully
+	# unwound. Rebuilding then releases the emitter tree and can crash in C++.
+	# Crossing a process-frame boundary guarantees the original signal stack is
+	# gone before any controls or completed tweens are released.
+	_begin_queued_rebuild.call_deferred()
+
+
+func _begin_queued_rebuild() -> void:
+	if not rebuild_queued:
+		return
+	if not is_inside_tree():
+		rebuild_queued = false
+		return
+	await get_tree().process_frame
+	_flush_queued_rebuild()
 
 
 func _flush_queued_rebuild() -> void:
@@ -525,6 +541,8 @@ func _graph_tier_section(tier: int) -> PanelContainer:
 
 
 func _set_tier_filter(index: int, side: String) -> void:
+	if busy:
+		return
 	if side == "left":
 		left_tier_filter = index
 	else:
