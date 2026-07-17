@@ -85,7 +85,7 @@ const TIME_STATE_UI := "ui_paused"
 const TIME_STATE_ACTIVITY := "activity_snapshot"
 const TIME_STATE_FAST_FORWARD := "fast_forward"
 const TIME_STATE_DAY_END := "day_end_hold"
-const SAVE_VERSION := 9
+const SAVE_VERSION := 10
 const MANUAL_SAVE_PATH := "user://saves/manual_save.json"
 const POKER_TIERS := [
 	{"name": "潮边小桌", "buy_in": 80, "wealth_required": 0, "small_blind": 1, "big_blind": 2, "description": "认识规则与人物，输赢幅度较小"},
@@ -195,6 +195,11 @@ var fish_market_orders: Array = []
 var fish_market_history: Array = []
 var fish_market_transactions: Array = []
 var fish_market_refresh_index: int = 0
+var fish_market_cohort_accounts := {}
+var fish_market_expected_arrivals := {}
+var fish_market_external_reference := {}
+var fish_market_actual_sales: Array = []
+var fish_market_processing := {}
 var fish_sale_sequence: int = 0
 var pending_fish_sales := {}
 var processed_fish_sales := {}
@@ -215,6 +220,15 @@ var share_order_sequence: int = 0
 var share_trade_history: Array = []
 var share_price_history: Array = []
 var share_dividend_history: Array = []
+var share_accounts := {}
+var share_company_financials := {}
+var share_order_books := {}
+var share_intraday_depth := {}
+var share_market_maintenance_cash: int = 0
+var world_group_accounts := {}
+var world_external_account := {"cash": 240000, "inflow": 0, "outflow": 0}
+var world_economy_flows: Array = []
+var port_economy_snapshot := {}
 var home_level: int = 0
 var home_display_items: Array[String] = []
 var home_aquarium: Array = []
@@ -413,6 +427,11 @@ func build_save_data(world_state: Dictionary = {}) -> Dictionary:
 			"fish_market_history": fish_market_history.duplicate(true),
 			"fish_market_transactions": fish_market_transactions.duplicate(true),
 			"fish_market_refresh_index": fish_market_refresh_index,
+			"fish_market_cohort_accounts": fish_market_cohort_accounts.duplicate(true),
+			"fish_market_expected_arrivals": fish_market_expected_arrivals.duplicate(true),
+			"fish_market_external_reference": fish_market_external_reference.duplicate(true),
+			"fish_market_actual_sales": fish_market_actual_sales.duplicate(true),
+			"fish_market_processing": fish_market_processing.duplicate(true),
 			"fish_sale_sequence": fish_sale_sequence,
 			"processed_fish_sales": processed_fish_sales.duplicate(true),
 			"dive_equipment": dive_equipment.duplicate(true),
@@ -432,6 +451,15 @@ func build_save_data(world_state: Dictionary = {}) -> Dictionary:
 			"share_trade_history": share_trade_history.duplicate(true),
 			"share_price_history": share_price_history.duplicate(true),
 			"share_dividend_history": share_dividend_history.duplicate(true),
+			"share_accounts": share_accounts.duplicate(true),
+			"share_company_financials": share_company_financials.duplicate(true),
+			"share_order_books": share_order_books.duplicate(true),
+			"share_intraday_depth": share_intraday_depth.duplicate(true),
+			"share_market_maintenance_cash": share_market_maintenance_cash,
+			"world_group_accounts": world_group_accounts.duplicate(true),
+			"world_external_account": world_external_account.duplicate(true),
+			"world_economy_flows": world_economy_flows.duplicate(true),
+			"port_economy_snapshot": port_economy_snapshot.duplicate(true),
 			"home_level": home_level,
 			"home_display_items": home_display_items.duplicate(),
 			"home_aquarium": home_aquarium.duplicate(true),
@@ -672,6 +700,11 @@ func restore_save_data(data: Dictionary) -> Dictionary:
 	fish_market_history = saved.get("fish_market_history", []).duplicate(true)
 	fish_market_transactions = saved.get("fish_market_transactions", []).duplicate(true)
 	fish_market_refresh_index = maxi(0, int(saved.get("fish_market_refresh_index", 0)))
+	fish_market_cohort_accounts = saved.get("fish_market_cohort_accounts", {}).duplicate(true)
+	fish_market_expected_arrivals = saved.get("fish_market_expected_arrivals", {}).duplicate(true)
+	fish_market_external_reference = saved.get("fish_market_external_reference", {}).duplicate(true)
+	fish_market_actual_sales = saved.get("fish_market_actual_sales", []).duplicate(true)
+	fish_market_processing = saved.get("fish_market_processing", {}).duplicate(true)
 	fish_sale_sequence = maxi(0, int(saved.get("fish_sale_sequence", 0)))
 	processed_fish_sales = saved.get("processed_fish_sales", {}).duplicate(true)
 	pending_fish_sales.clear()
@@ -698,6 +731,15 @@ func restore_save_data(data: Dictionary) -> Dictionary:
 	share_trade_history = saved.get("share_trade_history", []).duplicate(true)
 	share_price_history = saved.get("share_price_history", []).duplicate(true)
 	share_dividend_history = saved.get("share_dividend_history", []).duplicate(true)
+	share_accounts = saved.get("share_accounts", {}).duplicate(true)
+	share_company_financials = saved.get("share_company_financials", {}).duplicate(true)
+	share_order_books = saved.get("share_order_books", {}).duplicate(true)
+	share_intraday_depth = saved.get("share_intraday_depth", {}).duplicate(true)
+	share_market_maintenance_cash = maxi(0, int(saved.get("share_market_maintenance_cash", 0)))
+	world_group_accounts = saved.get("world_group_accounts", {}).duplicate(true)
+	world_external_account = saved.get("world_external_account", {"cash": 240000, "inflow": 0, "outflow": 0}).duplicate(true)
+	world_economy_flows = saved.get("world_economy_flows", []).duplicate(true)
+	port_economy_snapshot = saved.get("port_economy_snapshot", {}).duplicate(true)
 	home_level = clampi(int(saved.get("home_level", 0)), 0, HomeCatalog.max_level())
 	home_display_items.clear()
 	for raw_item_id in saved.get("home_display_items", []):
@@ -769,6 +811,12 @@ func restore_save_data(data: Dictionary) -> Dictionary:
 		_initialize_poker_invitations()
 	if fish_market_quotes.is_empty():
 		_initialize_fish_market()
+	else:
+		_ensure_fish_market_economy()
+		var repair_rng := RandomNumberGenerator.new()
+		repair_rng.seed = posmod(daily_seed, 2147483647) ^ 32452843
+		_replenish_fish_cohort_orders(repair_rng, false)
+		_recompute_fish_market_demand()
 	_repair_share_market_state()
 	time_state = TIME_STATE_DAY_END if day_end_pending else TIME_STATE_WORLD
 	changed.emit()
@@ -782,10 +830,10 @@ func _validate_save_data(data: Dictionary) -> Dictionary:
 	if not data.get("state", {}) is Dictionary or not data.get("world", {}) is Dictionary:
 		return {"ok": false, "text": "存档结构损坏，未修改当前进度。"}
 	var saved: Dictionary = data["state"]
-	for key in ["daily_schedule", "discovered", "discovery_records", "tower_milestones", "attempted_pairs", "relationships", "memories", "known_npcs", "npc_topic_reads", "npc_request_states", "npc_shared_creations", "npc_shared_fish", "npc_deep_talk_days", "npc_talk_counts", "npc_memory_rewarded", "dive_state", "marine_discoveries", "marine_size_records", "fish_market_quotes", "fish_market_stock", "fish_market_demand", "fish_market_reasons", "processed_fish_sales", "dive_equipment", "dive_equipment_levels", "last_dive_result", "share_quotes", "share_previous_quotes", "share_next_quotes", "share_company_reports", "share_lots", "finale_summary", "economy_day_opening", "journey_tutorial_actions"]:
+	for key in ["daily_schedule", "discovered", "discovery_records", "tower_milestones", "attempted_pairs", "relationships", "memories", "known_npcs", "npc_topic_reads", "npc_request_states", "npc_shared_creations", "npc_shared_fish", "npc_deep_talk_days", "npc_talk_counts", "npc_memory_rewarded", "dive_state", "marine_discoveries", "marine_size_records", "fish_market_quotes", "fish_market_stock", "fish_market_demand", "fish_market_reasons", "fish_market_cohort_accounts", "fish_market_expected_arrivals", "fish_market_external_reference", "fish_market_processing", "processed_fish_sales", "dive_equipment", "dive_equipment_levels", "last_dive_result", "share_quotes", "share_previous_quotes", "share_next_quotes", "share_company_reports", "share_lots", "share_accounts", "share_company_financials", "share_order_books", "share_intraday_depth", "world_group_accounts", "world_external_account", "port_economy_snapshot", "finale_summary", "economy_day_opening", "journey_tutorial_actions"]:
 		if saved.has(key) and not saved[key] is Dictionary:
 			return {"ok": false, "text": "存档字段%s损坏，未修改当前进度。" % key}
-	for key in ["time_event_log", "recent_synthesis_pairs", "wealth_history", "economy_events", "day_end_reports", "relief_history", "poker_npc_wallets", "poker_npc_brought", "poker_npc_present", "poker_session_history", "poker_invitations", "race_events", "race_history", "fish_catch_inventory", "fish_market_orders", "fish_market_history", "fish_market_transactions", "share_pending_orders", "share_trade_history", "share_price_history", "share_dividend_history", "home_display_items", "home_aquarium", "home_guest_history"]:
+	for key in ["time_event_log", "recent_synthesis_pairs", "wealth_history", "economy_events", "day_end_reports", "relief_history", "poker_npc_wallets", "poker_npc_brought", "poker_npc_present", "poker_session_history", "poker_invitations", "race_events", "race_history", "fish_catch_inventory", "fish_market_orders", "fish_market_history", "fish_market_transactions", "fish_market_actual_sales", "share_pending_orders", "share_trade_history", "share_price_history", "share_dividend_history", "world_economy_flows", "home_display_items", "home_aquarium", "home_guest_history"]:
 		if saved.has(key) and not saved[key] is Array:
 			return {"ok": false, "text": "存档字段%s损坏，未修改当前进度。" % key}
 	return {"ok": true}
@@ -1665,6 +1713,7 @@ func _record_time_event(kind: String, source: String) -> void:
 
 func sleep_to_next_day() -> void:
 	var closing_day := day
+	_settle_world_group_economy(closing_day)
 	_settle_share_market_day(closing_day)
 	var report := _economy_report_for_day(closing_day)
 	day_end_reports.push_front(report)
@@ -1702,6 +1751,33 @@ func refresh_day() -> void:
 	_initialize_fish_market()
 	_open_share_market_day()
 	changed.emit()
+
+
+func _settle_world_group_economy(closing_day: int) -> void:
+	if int(port_economy_snapshot.get("settled_day", 0)) == closing_day:
+		return
+	_ensure_fish_market_economy()
+	var visitors := int(port_economy_snapshot.get("visitors", 24))
+	var arrivals := int(port_economy_snapshot.get("arrivals", 2))
+	var tourism_inflow := visitors * 85
+	var export_inflow := arrivals * 1250
+	var import_outflow := arrivals * 720 + (480 if weather == "强风" else 240)
+	var external_cash := int(world_external_account.get("cash", 240000))
+	var actual_inflow := mini(external_cash, tourism_inflow + export_inflow)
+	world_external_account["cash"] = external_cash - actual_inflow + import_outflow
+	world_external_account["inflow"] = int(world_external_account.get("inflow", 0)) + import_outflow
+	world_external_account["outflow"] = int(world_external_account.get("outflow", 0)) + actual_inflow
+	var hospitality: Dictionary = world_group_accounts["hospitality"]
+	var merchants: Dictionary = world_group_accounts["port_merchants"]
+	hospitality["cash"] = int(hospitality["cash"]) + int(round(actual_inflow * 0.42))
+	merchants["cash"] = int(merchants["cash"]) + actual_inflow - int(round(actual_inflow * 0.42)) - import_outflow
+	world_group_accounts["hospitality"] = hospitality
+	world_group_accounts["port_merchants"] = merchants
+	world_economy_flows.append({"day": closing_day, "source": "external_islands", "target": "island_groups", "tag": "游客与出口流入", "amount": actual_inflow})
+	world_economy_flows.append({"day": closing_day, "source": "island_groups", "target": "external_islands", "tag": "进口、维护与航运流出", "amount": import_outflow})
+	while world_economy_flows.size() > 128:
+		world_economy_flows.pop_front()
+	port_economy_snapshot["settled_day"] = closing_day
 
 
 func _initialize_npc_state() -> void:
@@ -2838,29 +2914,28 @@ func fish_inventory_value() -> int:
 
 
 func _initialize_fish_market() -> void:
-	fish_market_quotes.clear()
-	fish_market_stock.clear()
-	fish_market_demand.clear()
-	fish_market_reasons.clear()
-	fish_market_refresh_index = 0
 	var market_rng := RandomNumberGenerator.new()
 	market_rng.seed = posmod(daily_seed, 2147483647) ^ 32452843
+	_ensure_fish_market_economy()
 	for raw_id in FISH_SPECIES.keys():
 		var species_id := str(raw_id)
 		var fish: Dictionary = FISH_SPECIES[species_id]
-		var rarity := str(fish["rarity"])
-		var stock := market_rng.randi_range(5, 12) if rarity == "普通" else (market_rng.randi_range(2, 7) if rarity == "少见" else market_rng.randi_range(0, 2))
-		if weather == "强风":
-			stock = int(round(stock * 0.65))
-		var demand := market_rng.randi_range(5, 11)
-		if fish["tags"].has("餐厅"):
-			demand += 2
-		if phase_name() == "夜晚" and fish["tags"].has("收藏"):
-			demand += 3
-		fish_market_stock[species_id] = maxi(0, stock)
-		fish_market_demand[species_id] = maxi(1, demand)
-		fish_market_quotes[species_id] = _fish_target_quote(species_id, demand, stock)
+		if not fish_market_stock.has(species_id):
+			var rarity := str(fish["rarity"])
+			fish_market_stock[species_id] = market_rng.randi_range(4, 9) if rarity == "普通" else (market_rng.randi_range(1, 4) if rarity == "少见" else 0)
+		if not fish_market_external_reference.has(species_id):
+			fish_market_external_reference[species_id] = int(fish["base_value"])
+		fish_market_processing[species_id] = maxi(0, int(fish_market_processing.get(species_id, 0)))
+	_replenish_fish_cohort_orders(market_rng)
+	_recompute_fish_market_demand()
+	for raw_id in FISH_SPECIES.keys():
+		var species_id := str(raw_id)
+		var stock := int(fish_market_stock.get(species_id, 0))
+		var demand := int(fish_market_demand.get(species_id, 0))
+		var target := _fish_target_quote(species_id, demand, stock)
+		fish_market_quotes[species_id] = maxi(1, int(fish_market_quotes.get(species_id, target)))
 		fish_market_reasons[species_id] = _fish_price_reasons(species_id, stock, demand)
+		fish_market_expected_arrivals[species_id] = _fish_expected_arrival(species_id, market_rng)
 	_generate_fish_market_orders(market_rng)
 	_record_fish_market_history("清晨开市")
 
@@ -2872,42 +2947,33 @@ func _refresh_fish_market(reason: String) -> void:
 	fish_market_refresh_index += 1
 	var market_rng := RandomNumberGenerator.new()
 	market_rng.seed = posmod(daily_seed, 2147483647) ^ (fish_market_refresh_index * 49979687)
+	_settle_fish_market_channels(market_rng)
+	_replenish_fish_cohort_orders(market_rng, false)
+	_recompute_fish_market_demand()
 	for raw_id in FISH_SPECIES.keys():
 		var species_id := str(raw_id)
-		var fish: Dictionary = FISH_SPECIES[species_id]
 		var stock := maxi(0, int(fish_market_stock.get(species_id, 0)))
-		var prior_demand := maxi(1, int(fish_market_demand.get(species_id, 1)))
-		var consumption := mini(stock, market_rng.randi_range(1, maxi(1, mini(5, prior_demand))))
-		stock -= consumption
-		var supply_max := 6 if str(fish["rarity"]) == "普通" else (3 if str(fish["rarity"]) == "少见" else 1)
-		var npc_supply := market_rng.randi_range(0, supply_max)
-		if weather == "强风":
-			npc_supply = int(floor(npc_supply * 0.5))
-		elif weather == "阵雨" and fish["weather"].has("阵雨"):
-			npc_supply += 1
-		stock += npc_supply
-		var demand := market_rng.randi_range(4, 10)
-		if fish["tags"].has("餐厅"):
-			demand += 2
-		if phase_name() == "傍晚" and fish["tags"].has("节庆"):
-			demand += 3
-		if phase_name() == "夜晚" and fish["tags"].has("收藏"):
-			demand += 3
+		var demand := maxi(0, int(fish_market_demand.get(species_id, 0)))
+		var reference := float(fish_market_external_reference.get(species_id, FISH_SPECIES[species_id]["base_value"]))
+		fish_market_external_reference[species_id] = maxi(1, int(round(reference * (1.0 + market_rng.randf_range(-0.025, 0.025)))))
 		var target := float(_fish_target_quote(species_id, demand, stock))
 		var previous := float(fish_market_quotes.get(species_id, target))
 		fish_market_stock[species_id] = stock
-		fish_market_demand[species_id] = demand
-		fish_market_quotes[species_id] = maxi(1, int(round(previous * 0.60 + target * 0.40)))
+		var smoothed := previous * 0.70 + target * 0.30
+		fish_market_quotes[species_id] = maxi(1, int(round(clampf(smoothed, previous * 0.90, previous * 1.10))))
 		fish_market_reasons[species_id] = _fish_price_reasons(species_id, stock, demand)
+		fish_market_expected_arrivals[species_id] = _fish_expected_arrival(species_id, market_rng)
 	_record_fish_market_history(reason)
 	_record_wealth("鱼市重估 · %s" % reason)
 	changed.emit()
 
 
 func _fish_target_quote(species_id: String, demand: int, stock: int) -> int:
-	var base_value := float(FISH_SPECIES[species_id]["base_value"])
-	var supply_demand := clampf(sqrt(float(demand + 1) / float(stock + 1)), 0.60, 2.20)
-	return maxi(1, int(round(base_value * supply_demand)))
+	var reference := float(fish_market_external_reference.get(species_id, FISH_SPECIES[species_id]["base_value"]))
+	var arrivals := maxi(0, int(fish_market_expected_arrivals.get(species_id, 0)))
+	var normal_turnover := 8.0 if str(FISH_SPECIES[species_id]["rarity"]) == "普通" else (3.0 if str(FISH_SPECIES[species_id]["rarity"]) == "少见" else 1.0)
+	var scarcity := clampf(float(demand - stock - arrivals) / normal_turnover, -1.2, 2.0)
+	return maxi(1, int(round(reference * (1.0 + 0.25 * scarcity) - float(stock) * 0.10)))
 
 
 func _fish_price_reasons(species_id: String, stock: int, demand: int) -> Array:
@@ -2923,13 +2989,175 @@ func _fish_price_reasons(species_id: String, stock: int, demand: int) -> Array:
 		reasons.append("夜市收藏需求增加")
 	elif fish["tags"].has("餐厅"):
 		reasons.append("海鲜餐厅维持采购")
-	if stock >= demand + 4:
-		reasons.append("当前库存充足，报价承压")
-	elif demand >= stock + 4:
-		reasons.append("重点需求高于现有库存")
+	var arrivals := maxi(0, int(fish_market_expected_arrivals.get(species_id, 0)))
+	if stock + arrivals >= demand + 4:
+		reasons.append("当前库存与预计到货充足，报价承压")
+	elif demand >= stock + arrivals + 4:
+		reasons.append("持续订单高于库存与预计到货")
 	else:
-		reasons.append("居民供需大致平衡")
+		reasons.append("群体订单与可到货量大致平衡")
 	return reasons.slice(0, 3)
+
+
+func _ensure_fish_market_economy() -> void:
+	var definitions := {
+		"residents": {"name": "岛内居民", "cash": 26000, "budget": 1800, "tags": ["日常食用"]},
+		"restaurants": {"name": "海鲜餐饮", "cash": 42000, "budget": 3600, "tags": ["餐厅"]},
+		"visitors": {"name": "游客与节庆", "cash": 30000, "budget": 2600, "tags": ["节庆", "观赏"]},
+		"processors": {"name": "鱼获加工者", "cash": 52000, "budget": 4200, "tags": ["加工", "日常食用"]},
+		"exporters": {"name": "外岛出口商", "cash": 76000, "budget": 5200, "tags": ["收藏", "研究", "餐厅"]}
+	}
+	for cohort_id in definitions.keys():
+		if not fish_market_cohort_accounts.has(cohort_id):
+			var account: Dictionary = definitions[cohort_id].duplicate(true)
+			account["orders"] = []
+			account["spent"] = 0
+			account["received"] = 0
+			fish_market_cohort_accounts[cohort_id] = account
+	if world_group_accounts.is_empty():
+		world_group_accounts = {
+			"residents": {"name": "常住居民", "cash": 78000, "inventory": {}, "net_flow": 0},
+			"hospitality": {"name": "餐饮与旅店", "cash": 96000, "inventory": {}, "net_flow": 0},
+			"fishers": {"name": "渔民与船队", "cash": 115000, "inventory": {}, "net_flow": 0},
+			"processors": {"name": "加工者", "cash": 89000, "inventory": {}, "net_flow": 0},
+			"visitors": {"name": "游客", "cash": 62000, "inventory": {}, "net_flow": 0},
+			"port_merchants": {"name": "港商与航运", "cash": 140000, "inventory": {}, "net_flow": 0},
+			"race_organizers": {"name": "赛事组织者", "cash": 124000, "inventory": {}, "net_flow": 0}
+		}
+	_update_port_economy_snapshot()
+
+
+func _update_port_economy_snapshot() -> void:
+	var local_rng := RandomNumberGenerator.new()
+	local_rng.seed = posmod(daily_seed, 2147483647) ^ 86028121
+	port_economy_snapshot = {
+		"day": day, "residents": local_rng.randi_range(74, 108),
+		"visitors": local_rng.randi_range(10, 60), "arrivals": local_rng.randi_range(1, 4),
+		"weather": weather, "groups": world_group_accounts.size()
+	}
+
+
+func _replenish_fish_cohort_orders(market_rng: RandomNumberGenerator, new_day: bool = true) -> void:
+	for raw_cohort_id in fish_market_cohort_accounts.keys():
+		var cohort_id := str(raw_cohort_id)
+		var account: Dictionary = fish_market_cohort_accounts[cohort_id]
+		var retained: Array = []
+		for raw_order in account.get("orders", []):
+			if raw_order is Dictionary and int(raw_order.get("remaining", 0)) > 0 and int(raw_order.get("expires_day", day)) >= day:
+				retained.append(raw_order)
+		var wanted := 3 if new_day else 2
+		while retained.size() < wanted:
+			var candidates: Array[String] = []
+			for raw_id in FISH_SPECIES.keys():
+				var species_id := str(raw_id)
+				var species: Dictionary = FISH_SPECIES[species_id]
+				var matches := false
+				for tag in account.get("tags", []):
+					if species["tags"].has(tag):
+						matches = true
+						break
+				if not matches:
+					continue
+				if str(species["rarity"]) == "稀有" and not cohort_id in ["visitors", "exporters"]:
+					continue
+				candidates.append(species_id)
+			if candidates.is_empty():
+				break
+			var species_id := candidates[market_rng.randi_range(0, candidates.size() - 1)]
+			var rarity := str(FISH_SPECIES[species_id]["rarity"])
+			var quantity := market_rng.randi_range(3, 7) if rarity == "普通" else (market_rng.randi_range(1, 3) if rarity == "少见" else 1)
+			retained.append({
+				"order_id": "cohort-%s-d%03d-%03d" % [cohort_id, day, retained.size() + fish_market_refresh_index * 7],
+				"buyer_id": cohort_id, "species_id": species_id, "quantity": quantity,
+				"remaining": quantity, "completed": 0,
+				"max_price": maxi(1, int(round(float(fish_market_external_reference.get(species_id, FISH_SPECIES[species_id]["base_value"])) * market_rng.randf_range(0.95, 1.35)))),
+				"created_day": day, "created_tide": tide, "expires_day": day + market_rng.randi_range(1, 2)
+			})
+		account["orders"] = retained
+		fish_market_cohort_accounts[cohort_id] = account
+
+
+func _recompute_fish_market_demand() -> void:
+	for raw_id in FISH_SPECIES.keys():
+		fish_market_demand[str(raw_id)] = 0
+	for raw_account in fish_market_cohort_accounts.values():
+		if not raw_account is Dictionary:
+			continue
+		for raw_order in raw_account.get("orders", []):
+			if raw_order is Dictionary and int(raw_order.get("expires_day", day)) >= day:
+				var species_id := str(raw_order.get("species_id", ""))
+				fish_market_demand[species_id] = int(fish_market_demand.get(species_id, 0)) + maxi(0, int(raw_order.get("remaining", 0)))
+
+
+func _consume_fish_cohort_order(species_id: String, quantity: int) -> Dictionary:
+	var remaining := maxi(0, quantity)
+	var buyers: Array[String] = []
+	for raw_cohort_id in fish_market_cohort_accounts.keys():
+		var cohort_id := str(raw_cohort_id)
+		var account: Dictionary = fish_market_cohort_accounts[cohort_id]
+		var orders: Array = account.get("orders", []).duplicate(true)
+		for index in range(orders.size()):
+			if remaining <= 0:
+				break
+			var order: Dictionary = orders[index]
+			if str(order.get("species_id", "")) != species_id or int(order.get("remaining", 0)) <= 0:
+				continue
+			var used := mini(remaining, int(order["remaining"]))
+			order["remaining"] = int(order["remaining"]) - used
+			order["completed"] = int(order.get("completed", 0)) + used
+			orders[index] = order
+			remaining -= used
+			buyers.append(str(account.get("name", cohort_id)))
+		account["orders"] = orders
+		fish_market_cohort_accounts[cohort_id] = account
+	_recompute_fish_market_demand()
+	return {"consumed": quantity - remaining, "buyers": buyers}
+
+
+func _fish_expected_arrival(species_id: String, market_rng: RandomNumberGenerator) -> int:
+	var rarity := str(FISH_SPECIES[species_id]["rarity"])
+	var upper := 5 if rarity == "普通" else (2 if rarity == "少见" else 0)
+	var amount := market_rng.randi_range(0, upper) if upper > 0 else 0
+	if weather == "强风":
+		amount = int(floor(float(amount) * 0.5))
+	return amount
+
+
+func _append_fish_actual_sale(species_id: String, quantity: int, channel: String, procurement_cost: int, revenue: int, counterparty: String) -> void:
+	if quantity <= 0:
+		return
+	fish_market_actual_sales.append({
+		"day": day, "tide": tide, "species_id": species_id, "quantity": quantity,
+		"channel": channel, "procurement_cost": procurement_cost, "revenue": revenue,
+		"counterparty": counterparty
+	})
+	while fish_market_actual_sales.size() > 128:
+		fish_market_actual_sales.pop_front()
+
+
+func _settle_fish_market_channels(market_rng: RandomNumberGenerator) -> void:
+	for raw_id in FISH_SPECIES.keys():
+		var species_id := str(raw_id)
+		var arrivals := maxi(0, int(fish_market_expected_arrivals.get(species_id, 0)))
+		if arrivals > 0:
+			var direct := mini(arrivals, int(fish_market_demand.get(species_id, 0)))
+			if direct > 0:
+				var matched := _consume_fish_cohort_order(species_id, direct)
+				var procurement := int(round(float(fish_market_external_reference.get(species_id, 1)) * 0.72)) * direct
+				_append_fish_actual_sale(species_id, direct, "arrival_direct_order", procurement, int(fish_market_quotes.get(species_id, 1)) * direct, ",".join(matched["buyers"]))
+			fish_market_stock[species_id] = int(fish_market_stock.get(species_id, 0)) + arrivals - direct
+		var available_stock := maxi(0, int(fish_market_stock.get(species_id, 0)))
+		var demand := maxi(0, int(fish_market_demand.get(species_id, 0)))
+		var sold := mini(available_stock, mini(demand, market_rng.randi_range(0, maxi(1, mini(4, demand)))))
+		if sold > 0:
+			var matched := _consume_fish_cohort_order(species_id, sold)
+			fish_market_stock[species_id] = available_stock - sold
+			_append_fish_actual_sale(species_id, sold, "inventory_sale", 0, int(fish_market_quotes.get(species_id, 1)) * sold, ",".join(matched["buyers"]))
+		var processing_qty := maxi(0, int(fish_market_processing.get(species_id, 0)))
+		var processed := mini(processing_qty, 2)
+		if processed > 0:
+			fish_market_processing[species_id] = processing_qty - processed
+			_append_fish_actual_sale(species_id, processed, "processed_export", 0, int(round(float(fish_market_external_reference.get(species_id, 1)) * 0.82)) * processed, "外岛加工品买家")
 
 
 func _record_fish_market_history(reason: String) -> void:
@@ -3039,6 +3267,8 @@ func fish_market_rows() -> Array:
 			"change": int(fish_market_quotes.get(species_id, 1)) - previous_quote,
 			"stock": int(fish_market_stock.get(species_id, 0)),
 			"demand": int(fish_market_demand.get(species_id, 0)),
+			"expected_arrivals": int(fish_market_expected_arrivals.get(species_id, 0)),
+			"processing": int(fish_market_processing.get(species_id, 0)),
 			"reasons": fish_market_reasons.get(species_id, []).duplicate()
 		})
 	rows.sort_custom(func(a, b): return int(a["quote"]) > int(b["quote"]))
@@ -3057,7 +3287,8 @@ func create_fish_sale_preview(catch_ids: Array) -> Dictionary:
 	if selected.is_empty():
 		return {"ok": false, "text": "没有选择可出售的鱼获。"}
 	var demand_remaining := fish_market_demand.duplicate(true)
-	var overflow_counts := {}
+	var inventory_capacity := {}
+	var processing_counts := {}
 	var lines: Array = []
 	var total := 0
 	for catch_record in selected:
@@ -3067,29 +3298,30 @@ func create_fish_sale_preview(catch_ids: Array) -> Dictionary:
 		var freshness := fish_freshness_state(catch_record)
 		var freshness_multiplier := float(FishCatalog.FRESHNESS_MULTIPLIERS.get(freshness, 0.4))
 		var remaining := int(demand_remaining.get(species_id, 0))
-		var tier := "重点需求"
+		var tier := "直接订单"
+		var route := "direct_order"
 		var raw_unit := float(quote)
-		var demand_consumed := 0
 		if remaining > 0:
 			demand_remaining[species_id] = remaining - 1
-			demand_consumed = 1
 		else:
-			var overflow := int(overflow_counts.get(species_id, 0))
-			var overflow_capacity := maxi(2, int(ceil(float(fish_market_demand.get(species_id, 0)) * 0.5)))
-			if overflow < overflow_capacity:
-				tier = "普通加工85%"
+			var used_capacity := int(inventory_capacity.get(species_id, 0))
+			var capacity := maxi(2, 6 - int(fish_market_stock.get(species_id, 0)))
+			if used_capacity < capacity:
+				tier = "可售库存85%"
+				route = "inventory"
 				raw_unit = quote * 0.85
+				inventory_capacity[species_id] = used_capacity + 1
 			else:
-				tier = "大量加工60%"
-				raw_unit = float(FISH_SPECIES.get(species_id, {}).get("base_value", 1)) * 0.60
-			overflow_counts[species_id] = overflow + 1
+				tier = "加工出口60%"
+				route = "processing"
+				raw_unit = float(fish_market_external_reference.get(species_id, FISH_SPECIES.get(species_id, {}).get("base_value", 1))) * 0.60
+				processing_counts[species_id] = int(processing_counts.get(species_id, 0)) + 1
 		var unit_price := maxi(1, int(round(raw_unit * size_multiplier * freshness_multiplier)))
 		total += unit_price
 		lines.append({
 			"catch_id": str(catch_record["catch_id"]), "species_id": species_id,
 			"name": FishCatalog.species_name(species_id), "size": str(catch_record["size"]),
-			"freshness": freshness, "tier": tier, "unit_price": unit_price,
-			"demand_consumed": demand_consumed
+			"freshness": freshness, "tier": tier, "route": route, "unit_price": unit_price
 		})
 	fish_sale_sequence += 1
 	var sale_id := "sale-d%03d-t%02d-%05d" % [day, tide, fish_sale_sequence]
@@ -3113,12 +3345,20 @@ func confirm_fish_sale(sale_id: String) -> Dictionary:
 			pending_fish_sales.erase(sale_id)
 			return {"ok": false, "text": "鱼获箱已经变化，未执行本次出售。"}
 	var sold_ids := {}
+	var route_counts := {"direct_order": 0, "inventory": 0, "processing": 0}
 	for raw_line in preview["lines"]:
 		var line: Dictionary = raw_line
 		var species_id := str(line["species_id"])
 		sold_ids[str(line["catch_id"])] = true
-		fish_market_stock[species_id] = int(fish_market_stock.get(species_id, 0)) + 1
-		fish_market_demand[species_id] = maxi(0, int(fish_market_demand.get(species_id, 0)) - int(line.get("demand_consumed", 0)))
+		var route := str(line.get("route", "processing"))
+		route_counts[route] = int(route_counts.get(route, 0)) + 1
+		if route == "direct_order":
+			var matched := _consume_fish_cohort_order(species_id, 1)
+			_append_fish_actual_sale(species_id, 1, "player_direct_order", int(line["unit_price"]), int(round(float(line["unit_price"]) * 1.18)), ",".join(matched["buyers"]))
+		elif route == "inventory":
+			fish_market_stock[species_id] = int(fish_market_stock.get(species_id, 0)) + 1
+		else:
+			fish_market_processing[species_id] = int(fish_market_processing.get(species_id, 0)) + 1
 	var retained: Array = []
 	for raw_catch in fish_catch_inventory:
 		if not sold_ids.has(str(raw_catch.get("catch_id", ""))):
@@ -3130,7 +3370,8 @@ func confirm_fish_sale(sale_id: String) -> Dictionary:
 	pending_fish_sales.erase(sale_id)
 	var transaction := {
 		"sale_id": sale_id, "day": day, "tide": tide, "total": total,
-		"count": int(preview["count"]), "lines": preview["lines"].duplicate(true)
+		"count": int(preview["count"]), "routes": route_counts,
+		"lines": preview["lines"].duplicate(true)
 	}
 	fish_market_transactions.append(transaction)
 	while fish_market_transactions.size() > 64:
@@ -3184,6 +3425,7 @@ func turn_in_fish_order(order_id: String) -> Dictionary:
 	fish_catch_inventory = retained
 	var reward := int(order["quantity"]) * int(order["reward_each"])
 	cash += reward
+	_append_fish_actual_sale(str(order["species_id"]), int(order["quantity"]), "named_direct_order", reward, int(round(float(reward) * 1.12)), str(order["buyer"]))
 	order["completed"] = true
 	fish_market_orders[order_index] = order
 	if not npc_id.is_empty() and NPCS.has(npc_id):
@@ -3233,12 +3475,18 @@ func _initialize_share_market() -> void:
 	share_trade_history.clear()
 	share_price_history.clear()
 	share_dividend_history.clear()
+	share_accounts.clear()
+	share_company_financials.clear()
+	share_order_books.clear()
+	share_intraday_depth.clear()
+	share_market_maintenance_cash = 0
 	for company_id in share_company_ids():
 		var company: Dictionary = SHARE_COMPANIES[company_id]
 		var price := int(company["base_price"])
 		share_quotes[company_id] = price
 		share_previous_quotes[company_id] = price
 		share_lots[company_id] = []
+		_initialize_share_company_economy(company_id, price)
 		share_company_reports[company_id] = {
 			"day": 0,
 			"revenue": 0,
@@ -3255,6 +3503,83 @@ func _initialize_share_market() -> void:
 		"reports": share_company_reports.duplicate(true)
 	})
 	_sync_share_market_unlock()
+	_rebuild_all_share_depth()
+
+
+func _initialize_share_company_economy(company_id: String, price: int) -> void:
+	var company: Dictionary = SHARE_COMPANIES[company_id]
+	share_accounts[company_id] = {
+		"founders": {"name": "创始人与长期持有人", "cash": price * 900, "holdings": 300, "locked_today": 0, "target_holdings": 300, "risk_preference": 0.20, "valuation": float(price) * 1.08},
+		"local_merchants": {"name": "本地富商", "cash": price * 700, "holdings": 180, "locked_today": 0, "target_holdings": 180, "risk_preference": 0.45, "valuation": float(price) * 1.02},
+		"external_traders": {"name": "外岛交易者", "cash": price * 850, "holdings": 160, "locked_today": 0, "target_holdings": 160, "risk_preference": 0.65, "valuation": float(price)},
+		"income_holders": {"name": "分红持有人", "cash": price * 600, "holdings": 130, "locked_today": 0, "target_holdings": 130, "risk_preference": 0.25, "valuation": float(price) * 1.04},
+		"trend_traders": {"name": "趋势交易者", "cash": price * 650, "holdings": 90, "locked_today": 0, "target_holdings": 90, "risk_preference": 0.80, "valuation": float(price)},
+		"panic_retail": {"name": "恐慌散户", "cash": price * 420, "holdings": 60, "locked_today": 0, "target_holdings": 60, "risk_preference": 0.90, "valuation": float(price) * 0.97}
+	}
+	share_company_financials[company_id] = {
+		"company_cash": int(company["base_price"]) * 420,
+		"productive_assets": int(company["base_price"]) * 650,
+		"debt": int(company["base_price"]) * 80,
+		"retained_earnings": 0,
+		"dividend_reserve": 0,
+		"sustainable_profit": float(company["target_profit"]),
+		"company_inventory": 80,
+		"fundamental_value": float(price),
+		"last_business_cash_flow": 0
+	}
+	share_order_books[company_id] = []
+	share_intraday_depth[company_id] = {"bid": [], "ask": [], "bid_total": 0, "ask_total": 0}
+
+
+func share_issued_total(company_id: String) -> int:
+	var total := share_quantity(company_id)
+	var accounts = share_accounts.get(company_id, {})
+	if accounts is Dictionary:
+		for raw_account in accounts.values():
+			if raw_account is Dictionary:
+				total += maxi(0, int(raw_account.get("holdings", 0)))
+	var financials: Dictionary = share_company_financials.get(company_id, {})
+	total += maxi(0, int(financials.get("company_inventory", 0)))
+	return total
+
+
+func _share_fundamental_value(company_id: String) -> float:
+	var financials: Dictionary = share_company_financials.get(company_id, {})
+	var multiple := 7.0 if company_id == "bluefin" else (9.0 if company_id == "wayfarer" else 8.0)
+	return maxf(20.0, (
+		float(financials.get("company_cash", 0)) + float(financials.get("productive_assets", 0))
+		- float(financials.get("debt", 0)) + float(financials.get("sustainable_profit", 0.0)) * multiple
+	) / 1000.0)
+
+
+func _rebuild_all_share_depth() -> void:
+	for company_id in share_company_ids():
+		_rebuild_share_depth(company_id)
+
+
+func _rebuild_share_depth(company_id: String) -> void:
+	var price := maxi(20, int(share_quotes.get(company_id, SHARE_COMPANIES[company_id]["base_price"])))
+	var bids: Array = []
+	var asks: Array = []
+	var bid_total := 0
+	var ask_total := 0
+	var accounts: Dictionary = share_accounts.get(company_id, {})
+	for raw_account_id in accounts.keys():
+		var account_id := str(raw_account_id)
+		var account: Dictionary = accounts[account_id]
+		var target := int(account.get("target_holdings", account.get("holdings", 0)))
+		var holdings := maxi(0, int(account.get("holdings", 0)))
+		var valuation := float(account.get("valuation", price))
+		var appetite := clampi(int(round(4.0 + float(account.get("risk_preference", 0.5)) * 12.0)), 3, 18)
+		var bid_quantity := mini(maxi(0, target + appetite - holdings), int(account.get("cash", 0)) / price)
+		var ask_quantity := mini(maxi(0, holdings - int(account.get("locked_today", 0))), maxi(0, holdings - target + appetite))
+		if valuation >= float(price) * 0.96 and bid_quantity > 0:
+			bids.append({"account_id": account_id, "quantity": bid_quantity, "price": price})
+			bid_total += bid_quantity
+		if valuation <= float(price) * 1.04 and ask_quantity > 0:
+			asks.append({"account_id": account_id, "quantity": ask_quantity, "price": price})
+			ask_total += ask_quantity
+	share_intraday_depth[company_id] = {"bid": bids, "ask": asks, "bid_total": bid_total, "ask_total": ask_total}
 
 
 func _repair_share_market_state() -> void:
@@ -3283,6 +3608,9 @@ func _repair_share_market_state() -> void:
 					"acquired_day": maxi(1, int(raw_lot.get("acquired_day", day)))
 				})
 		share_lots[company_id] = cleaned_lots
+		if not share_accounts.get(company_id, {}) is Dictionary or share_accounts.get(company_id, {}).is_empty():
+			_initialize_share_company_economy(company_id, int(share_quotes[company_id]))
+		_repair_share_ownership(company_id)
 	var cleaned_orders: Array = []
 	var expected_reserved := 0
 	for raw_order in share_pending_orders:
@@ -3295,6 +3623,9 @@ func _repair_share_market_state() -> void:
 		if not SHARE_COMPANIES.has(company_id) or not side in ["buy", "sell"] or quantity <= 0:
 			continue
 		order["status"] = "pending"
+		order["remaining_quantity"] = clampi(int(order.get("remaining_quantity", quantity)), 0, quantity)
+		order["filled_quantity"] = clampi(int(order.get("filled_quantity", quantity - int(order["remaining_quantity"]))), 0, quantity)
+		order["limit_price"] = maxi(20, int(order.get("limit_price", order.get("reference_price", 20))))
 		order["reserved_cash"] = maxi(0, int(order.get("reserved_cash", 0))) if side == "buy" else 0
 		expected_reserved += int(order["reserved_cash"])
 		cleaned_orders.append(order)
@@ -3302,7 +3633,46 @@ func _repair_share_market_state() -> void:
 	share_reserved_cash = expected_reserved
 	share_market_day = maxi(1, share_market_day)
 	share_last_settled_day = clampi(share_last_settled_day, 0, day)
+	var depth_needs_rebuild := false
+	for company_id in share_company_ids():
+		if not share_intraday_depth.get(company_id, {}) is Dictionary or share_intraday_depth.get(company_id, {}).is_empty():
+			depth_needs_rebuild = true
+			break
+	if depth_needs_rebuild:
+		_rebuild_all_share_depth()
 	_sync_share_market_unlock()
+
+
+func _repair_share_ownership(company_id: String) -> void:
+	var remaining := maxi(0, 1000 - share_quantity(company_id))
+	var accounts: Dictionary = share_accounts.get(company_id, {})
+	var financials: Dictionary = share_company_financials.get(company_id, {})
+	if financials.is_empty():
+		_initialize_share_company_economy(company_id, int(share_quotes.get(company_id, 20)))
+		financials = share_company_financials[company_id]
+	var account_total := 0
+	for raw_account in accounts.values():
+		if raw_account is Dictionary:
+			account_total += maxi(0, int(raw_account.get("holdings", 0)))
+	var inventory := maxi(0, int(financials.get("company_inventory", 0)))
+	if account_total + inventory != remaining:
+		if account_total <= remaining:
+			inventory = remaining - account_total
+		else:
+			var allocated := 0
+			for raw_account_id in accounts.keys():
+				var account_id := str(raw_account_id)
+				var account: Dictionary = accounts[account_id]
+				var quantity := int(floor(float(int(account.get("holdings", 0))) * float(remaining) / float(maxi(1, account_total))))
+				account["holdings"] = quantity
+				account["target_holdings"] = mini(int(account.get("target_holdings", quantity)), quantity)
+				accounts[account_id] = account
+				allocated += quantity
+			inventory = remaining - allocated
+	share_accounts[company_id] = accounts
+	financials["company_inventory"] = inventory
+	financials["fundamental_value"] = _share_fundamental_value(company_id)
+	share_company_financials[company_id] = financials
 
 
 func _sync_share_market_unlock() -> bool:
@@ -3332,9 +3702,9 @@ func share_market_status() -> Dictionary:
 		"open": open,
 		"label": "交易中" if open else "休市 · 次日订单",
 		"detail": (
-			"第1—10潮刻使用当日固定价即时交易；第10潮刻后只能提交次日开盘订单。"
+			"第1—10潮刻使用当日开盘价吃取有限深度；深度耗尽或第10潮刻后提交次日限价单。"
 			if open else
-			"当前订单将在次日第1潮刻按新报价撮合；撮合前可以撤销。"
+			"当前订单将在次日第1潮刻参加集合竞价；允许部分成交，未成交部分可撤销。"
 		),
 		"next_boundary": "第10潮刻收盘" if open else "次日第1潮刻开盘"
 	}
@@ -3453,6 +3823,59 @@ func _record_share_trade(entry: Dictionary) -> void:
 		share_trade_history.resize(64)
 
 
+func _fill_share_buy_from_accounts(company_id: String, requested: int, price: int) -> Dictionary:
+	var depth: Dictionary = share_intraday_depth.get(company_id, {})
+	var remaining := requested
+	var counterparties: Array[String] = []
+	var accounts: Dictionary = share_accounts.get(company_id, {})
+	for raw_level in depth.get("ask", []):
+		if remaining <= 0:
+			break
+		var level: Dictionary = raw_level
+		var account_id := str(level.get("account_id", ""))
+		if not accounts.has(account_id):
+			continue
+		var account: Dictionary = accounts[account_id]
+		var sellable := maxi(0, int(account.get("holdings", 0)) - int(account.get("locked_today", 0)))
+		var filled := mini(remaining, mini(int(level.get("quantity", 0)), sellable))
+		if filled <= 0:
+			continue
+		account["holdings"] = int(account["holdings"]) - filled
+		account["cash"] = int(account.get("cash", 0)) + price * filled
+		accounts[account_id] = account
+		counterparties.append(str(account.get("name", account_id)))
+		remaining -= filled
+	share_accounts[company_id] = accounts
+	return {"filled": requested - remaining, "counterparties": counterparties}
+
+
+func _fill_share_sell_to_accounts(company_id: String, requested: int, price: int) -> Dictionary:
+	var depth: Dictionary = share_intraday_depth.get(company_id, {})
+	var remaining := requested
+	var counterparties: Array[String] = []
+	var accounts: Dictionary = share_accounts.get(company_id, {})
+	for raw_level in depth.get("bid", []):
+		if remaining <= 0:
+			break
+		var level: Dictionary = raw_level
+		var account_id := str(level.get("account_id", ""))
+		if not accounts.has(account_id):
+			continue
+		var account: Dictionary = accounts[account_id]
+		var affordable := int(account.get("cash", 0)) / price
+		var filled := mini(remaining, mini(int(level.get("quantity", 0)), affordable))
+		if filled <= 0:
+			continue
+		account["holdings"] = int(account.get("holdings", 0)) + filled
+		account["locked_today"] = int(account.get("locked_today", 0)) + filled
+		account["cash"] = int(account.get("cash", 0)) - price * filled
+		accounts[account_id] = account
+		counterparties.append(str(account.get("name", account_id)))
+		remaining -= filled
+	share_accounts[company_id] = accounts
+	return {"filled": requested - remaining, "counterparties": counterparties}
+
+
 func trade_shares(company_id: String, side: String, quantity: int) -> Dictionary:
 	if not SHARE_COMPANIES.has(company_id):
 		return {"ok": false, "text": "这家商会不存在。"}
@@ -3465,51 +3888,74 @@ func trade_shares(company_id: String, side: String, quantity: int) -> Dictionary
 		return {"ok": false, "text": "交易份数必须大于0。"}
 	var company: Dictionary = SHARE_COMPANIES[company_id]
 	var price := int(share_quotes.get(company_id, int(company["base_price"])))
-	var gross := price * quantity
-	var fee := share_trade_fee(gross)
 	if side == "buy":
 		var remaining_cap := int(company["player_cap"]) - share_quantity(company_id)
 		if quantity > remaining_cap:
 			return {"ok": false, "text": "首版单家公司最多持有%d份；你还能买%d份。" % [int(company["player_cap"]), maxi(0, remaining_cap)]}
+		var available := int(share_intraday_depth.get(company_id, {}).get("ask_total", 0))
+		var filled := mini(quantity, available)
+		if filled <= 0:
+			return {"ok": false, "text": "当前卖方深度已耗尽；可以在休市后提交次日限价单。"}
+		var gross := price * filled
+		var fee := share_trade_fee(gross)
 		var total_paid := gross + fee
 		if cash < total_paid:
-			return {"ok": false, "text": "买入%d份%s共需%d金贝（含%d金贝交易费）。" % [quantity, str(company["short_name"]), total_paid, fee]}
+			return {"ok": false, "text": "当前可成交%d份%s，共需%d金贝（含%d金贝交易费）。" % [filled, str(company["short_name"]), total_paid, fee]}
+		var fill := _fill_share_buy_from_accounts(company_id, filled, price)
+		filled = int(fill.get("filled", 0))
+		if filled <= 0:
+			return {"ok": false, "text": "卖方账户持仓已经变化，未执行交易。"}
+		gross = price * filled
+		fee = share_trade_fee(gross)
+		total_paid = gross + fee
 		cash -= total_paid
-		_add_share_lot(company_id, quantity, total_paid, day)
+		share_market_maintenance_cash += fee
+		_add_share_lot(company_id, filled, total_paid, day)
 		share_order_sequence += 1
 		_record_share_trade({
 			"trade_id": "share-trade-%06d" % share_order_sequence,
 			"day": day, "tide": tide, "company_id": company_id, "side": "buy",
-			"quantity": quantity, "price": price, "gross": gross, "fee": fee,
-			"net_cash": -total_paid, "source": "即时交易"
+			"quantity": filled, "requested_quantity": quantity, "price": price, "gross": gross, "fee": fee,
+			"net_cash": -total_paid, "source": "日内有限深度", "counterparties": fill.get("counterparties", [])
 		})
-		_record_wealth("商会份契 · 买入%s%d份" % [str(company["short_name"]), quantity])
+		_rebuild_share_depth(company_id)
+		_record_wealth("商会份契 · 买入%s%d份" % [str(company["short_name"]), filled])
 		changed.emit()
-		return {"ok": true, "side": "buy", "quantity": quantity, "price": price, "fee": fee, "total": total_paid, "text": "买入%d份%s，成交%d金贝，交易费%d金贝；次日方可卖出。" % [quantity, str(company["short_name"]), gross, fee]}
+		return {"ok": true, "side": "buy", "quantity": filled, "requested_quantity": quantity, "partial": filled < quantity, "price": price, "fee": fee, "total": total_paid, "text": "买入%d/%d份%s，成交%d金贝，交易费%d金贝；次日方可卖出。" % [filled, quantity, str(company["short_name"]), gross, fee]}
 	if side != "sell":
 		return {"ok": false, "text": "不支持的交易方向。"}
 	var sellable := share_sellable_quantity(company_id)
 	if quantity > sellable:
 		return {"ok": false, "text": "当前只有%d份%s可售；当日买入部分需等到次日。" % [sellable, str(company["short_name"])]}
-	var consumed := _consume_share_lots(company_id, quantity, day)
+	var available := int(share_intraday_depth.get(company_id, {}).get("bid_total", 0))
+	var filled := mini(quantity, available)
+	if filled <= 0:
+		return {"ok": false, "text": "当前买方深度已耗尽；可以在休市后提交次日限价单。"}
+	var fill := _fill_share_sell_to_accounts(company_id, filled, price)
+	filled = int(fill.get("filled", 0))
+	var consumed := _consume_share_lots(company_id, filled, day)
 	if not bool(consumed.get("ok", false)):
 		return {"ok": false, "text": "持仓批次发生变化，未执行卖出。"}
+	var gross := price * filled
+	var fee := share_trade_fee(gross)
 	var proceeds := gross - fee
 	cash += proceeds
+	share_market_maintenance_cash += fee
 	var realized := float(proceeds) - float(consumed["cost_basis"])
 	share_order_sequence += 1
 	_record_share_trade({
 		"trade_id": "share-trade-%06d" % share_order_sequence,
 		"day": day, "tide": tide, "company_id": company_id, "side": "sell",
-		"quantity": quantity, "price": price, "gross": gross, "fee": fee,
-		"net_cash": proceeds, "realized": realized, "source": "即时交易"
+		"quantity": filled, "requested_quantity": quantity, "price": price, "gross": gross, "fee": fee,
+		"net_cash": proceeds, "realized": realized, "source": "日内有限深度", "counterparties": fill.get("counterparties", [])
 	})
-	_record_wealth("商会份契 · 卖出%s%d份" % [str(company["short_name"]), quantity])
+	_rebuild_share_depth(company_id)
+	_record_wealth("商会份契 · 卖出%s%d份" % [str(company["short_name"]), filled])
 	changed.emit()
-	return {"ok": true, "side": "sell", "quantity": quantity, "price": price, "fee": fee, "total": proceeds, "realized": realized, "text": "卖出%d份%s，扣除%d金贝交易费后收到%d金贝；已实现盈亏%+.0f金贝。" % [quantity, str(company["short_name"]), fee, proceeds, realized]}
+	return {"ok": true, "side": "sell", "quantity": filled, "requested_quantity": quantity, "partial": filled < quantity, "price": price, "fee": fee, "total": proceeds, "realized": realized, "text": "卖出%d/%d份%s，扣除%d金贝交易费后收到%d金贝；已实现盈亏%+.0f金贝。" % [filled, quantity, str(company["short_name"]), fee, proceeds, realized]}
 
 
-func queue_share_order(company_id: String, side: String, quantity: int) -> Dictionary:
+func queue_share_order(company_id: String, side: String, quantity: int, limit_price: int = 0) -> Dictionary:
 	if not SHARE_COMPANIES.has(company_id):
 		return {"ok": false, "text": "这家商会不存在。"}
 	if not can_trade_shares():
@@ -3523,6 +3969,9 @@ func queue_share_order(company_id: String, side: String, quantity: int) -> Dicti
 		return {"ok": false, "text": "订单份数必须大于0。"}
 	var company: Dictionary = SHARE_COMPANIES[company_id]
 	var current_price := int(share_quotes.get(company_id, int(company["base_price"])))
+	if limit_price <= 0:
+		limit_price = int(floor(float(current_price) * 1.12)) if side == "buy" else int(ceil(float(current_price) * 0.88))
+	limit_price = clampi(limit_price, maxi(20, int(ceil(float(current_price) * 0.88))), int(floor(float(current_price) * 1.12)))
 	var reserved := 0
 	if side == "buy":
 		var pending_buys := 0
@@ -3532,7 +3981,8 @@ func queue_share_order(company_id: String, side: String, quantity: int) -> Dicti
 		var remaining_cap := int(company["player_cap"]) - share_quantity(company_id) - pending_buys
 		if quantity > remaining_cap:
 			return {"ok": false, "text": "计入其他买单后，你还能预约%d份%s。" % [maxi(0, remaining_cap), str(company["short_name"])]}
-		reserved = share_overnight_buy_reserve(company_id, quantity)
+		var gross_limit := limit_price * quantity
+		reserved = gross_limit + share_trade_fee(gross_limit)
 		if cash < reserved:
 			return {"ok": false, "text": "次日买单需冻结%d金贝，以覆盖可能的涨幅与交易费。" % reserved}
 		cash -= reserved
@@ -3549,6 +3999,9 @@ func queue_share_order(company_id: String, side: String, quantity: int) -> Dicti
 		"company_id": company_id,
 		"side": side,
 		"quantity": quantity,
+		"remaining_quantity": quantity,
+		"filled_quantity": 0,
+		"limit_price": limit_price,
 		"reference_price": current_price,
 		"reserved_cash": reserved,
 		"status": "pending"
@@ -3582,6 +4035,23 @@ func _execute_share_orders_at_open() -> Dictionary:
 	share_pending_orders.clear()
 	var executed := 0
 	var net_cash := 0
+	for company_id in share_company_ids():
+		var price := int(share_quotes.get(company_id, 20))
+		var bids: Array = []
+		var asks: Array = []
+		var bid_total := 0
+		var ask_total := 0
+		for raw_order in share_order_books.get(company_id, []):
+			if not raw_order is Dictionary:
+				continue
+			var order: Dictionary = raw_order
+			if str(order.get("side", "")) == "buy" and int(order.get("limit_price", 0)) >= price:
+				bids.append({"account_id": str(order.get("account_id", "")), "quantity": int(order.get("quantity", 0)), "price": price})
+				bid_total += int(order.get("quantity", 0))
+			elif str(order.get("side", "")) == "sell" and int(order.get("limit_price", 999999)) <= price:
+				asks.append({"account_id": str(order.get("account_id", "")), "quantity": int(order.get("quantity", 0)), "price": price})
+				ask_total += int(order.get("quantity", 0))
+		share_intraday_depth[company_id] = {"bid": bids, "ask": asks, "bid_total": bid_total, "ask_total": ask_total}
 	for raw_order in pending:
 		if not raw_order is Dictionary:
 			continue
@@ -3591,44 +4061,79 @@ func _execute_share_orders_at_open() -> Dictionary:
 			continue
 		var company: Dictionary = SHARE_COMPANIES[company_id]
 		var side := str(order.get("side", ""))
-		var quantity := maxi(0, int(order.get("quantity", 0)))
+		var quantity := maxi(0, int(order.get("remaining_quantity", order.get("quantity", 0))))
 		var price := int(share_quotes.get(company_id, int(company["base_price"])))
-		var gross := price * quantity
-		var fee := share_trade_fee(gross)
+		var limit_price := int(order.get("limit_price", price))
 		if side == "buy":
-			var reserved := maxi(0, int(order.get("reserved_cash", 0)))
-			share_reserved_cash = maxi(0, share_reserved_cash - reserved)
-			var total_paid := gross + fee
-			if quantity <= 0 or total_paid > reserved or share_quantity(company_id) + quantity > int(company["player_cap"]):
-				cash += reserved
+			var original_reserved := maxi(0, int(order.get("reserved_cash", 0)))
+			if quantity <= 0 or price > limit_price:
+				share_pending_orders.append(order)
 				continue
-			cash += reserved - total_paid
-			net_cash += reserved - total_paid
-			_add_share_lot(company_id, quantity, total_paid, day)
+			var remaining_cap := int(company["player_cap"]) - share_quantity(company_id)
+			var requested := mini(quantity, remaining_cap)
+			var fill := _fill_share_buy_from_accounts(company_id, requested, price)
+			var filled := int(fill.get("filled", 0))
+			var gross := price * filled
+			var fee := share_trade_fee(gross) if filled > 0 else 0
+			var total_paid := gross + fee
+			var remaining_quantity := quantity - filled
+			var remaining_gross_limit := limit_price * remaining_quantity
+			var remaining_reserved := remaining_gross_limit + (share_trade_fee(remaining_gross_limit) if remaining_quantity > 0 else 0)
+			share_reserved_cash = maxi(0, share_reserved_cash - original_reserved) + remaining_reserved
+			var refund := maxi(0, original_reserved - total_paid - remaining_reserved)
+			cash += refund
+			net_cash += refund
+			if filled <= 0:
+				order["reserved_cash"] = remaining_reserved
+				share_pending_orders.append(order)
+				continue
+			share_market_maintenance_cash += fee
+			_add_share_lot(company_id, filled, total_paid, day)
 			executed += 1
 			_record_share_trade({
 				"trade_id": str(order["order_id"]),
 				"day": day, "tide": 1, "company_id": company_id, "side": "buy",
-				"quantity": quantity, "price": price, "gross": gross, "fee": fee,
-				"net_cash": -total_paid, "source": "次日开盘撮合"
+				"quantity": filled, "requested_quantity": quantity, "price": price, "gross": gross, "fee": fee,
+				"net_cash": -total_paid, "source": "集合竞价", "counterparties": fill.get("counterparties", [])
 			})
+			if remaining_quantity > 0:
+				order["remaining_quantity"] = remaining_quantity
+				order["filled_quantity"] = int(order.get("filled_quantity", 0)) + filled
+				order["reserved_cash"] = remaining_reserved
+				order["status"] = "partial"
+				share_pending_orders.append(order)
 		elif side == "sell":
-			var consumed := _consume_share_lots(company_id, quantity, day)
-			if not bool(consumed.get("ok", false)):
+			if price < limit_price:
+				share_pending_orders.append(order)
 				continue
+			var fill := _fill_share_sell_to_accounts(company_id, quantity, price)
+			var filled := int(fill.get("filled", 0))
+			var consumed := _consume_share_lots(company_id, filled, day)
+			if not bool(consumed.get("ok", false)):
+				share_pending_orders.append(order)
+				continue
+			var gross := price * filled
+			var fee := share_trade_fee(gross)
 			var proceeds := gross - fee
 			var realized := float(proceeds) - float(consumed["cost_basis"])
 			cash += proceeds
 			net_cash += proceeds
+			share_market_maintenance_cash += fee
 			executed += 1
 			_record_share_trade({
 				"trade_id": str(order["order_id"]),
 				"day": day, "tide": 1, "company_id": company_id, "side": "sell",
-				"quantity": quantity, "price": price, "gross": gross, "fee": fee,
-				"net_cash": proceeds, "realized": realized, "source": "次日开盘撮合"
+				"quantity": filled, "requested_quantity": quantity, "price": price, "gross": gross, "fee": fee,
+				"net_cash": proceeds, "realized": realized, "source": "集合竞价", "counterparties": fill.get("counterparties", [])
 			})
+			if filled < quantity:
+				order["remaining_quantity"] = quantity - filled
+				order["filled_quantity"] = int(order.get("filled_quantity", 0)) + filled
+				order["status"] = "partial"
+				share_pending_orders.append(order)
 	if executed > 0 or net_cash != 0:
 		_record_wealth("商会份契 · 开盘撮合%d笔" % executed)
+	_rebuild_all_share_depth()
 	return {"count": executed, "net_cash": net_cash}
 
 
@@ -3637,26 +4142,24 @@ func _share_company_report(company_id: String, closing_day: int) -> Dictionary:
 	var revenue := 0
 	var costs := 0
 	if company_id == "bluefin":
-		var stock_total := 0
-		var demand_total := 0
-		for value in fish_market_stock.values():
-			stock_total += maxi(0, int(value))
-		for value in fish_market_demand.values():
-			demand_total += maxi(0, int(value))
-		var fulfilled := mini(stock_total, demand_total)
 		var player_procurement := 0
 		for raw_transaction in fish_market_transactions:
 			if raw_transaction is Dictionary and int(raw_transaction.get("day", 0)) == closing_day:
 				player_procurement += maxi(0, int(raw_transaction.get("total", 0)))
-		var completed_orders := 0
-		for raw_order in fish_market_orders:
-			if raw_order is Dictionary and bool(raw_order.get("completed", false)):
-				completed_orders += 1
-		revenue = 16000 + fulfilled * 90 + completed_orders * 650
+		var actual_units := 0
+		var actual_revenue := 0
+		var channel_costs := 0
+		for raw_sale in fish_market_actual_sales:
+			if raw_sale is Dictionary and int(raw_sale.get("day", 0)) == closing_day:
+				actual_units += maxi(0, int(raw_sale.get("quantity", 0)))
+				actual_revenue += maxi(0, int(raw_sale.get("revenue", 0)))
+				channel_costs += maxi(0, int(raw_sale.get("procurement_cost", 0)))
+		var port_sales := 8800 + int(port_economy_snapshot.get("visitors", 24)) * 55 + int(port_economy_snapshot.get("arrivals", 2)) * 520
+		revenue = port_sales + actual_revenue
 		var weather_cost := 3200 if weather == "强风" else (1500 if weather == "阵雨" else 700)
-		costs = 10500 + player_procurement + weather_cost
-		drivers.append("库存%d、重点需求%d，可覆盖%d份销售" % [stock_total, demand_total, fulfilled])
-		drivers.append("当日向玩家采购支出%d金贝" % player_procurement)
+		costs = 6900 + player_procurement + channel_costs + weather_cost
+		drivers.append("群体与外岛实际销售%d件，流水%d金贝" % [actual_units, actual_revenue + port_sales])
+		drivers.append("玩家采购%d、其他渠道采购%d金贝" % [player_procurement, channel_costs])
 		drivers.append("%s带来%d金贝海况成本" % [weather, weather_cost])
 	elif company_id == "wayfarer":
 		var discoveries_today := 0
@@ -3667,13 +4170,14 @@ func _share_company_report(company_id: String, closing_day: int) -> Dictionary:
 		for raw_attempt in attempted_pairs.values():
 			if raw_attempt is Dictionary and int(raw_attempt.get("day", 0)) == closing_day:
 				attempts_today += 1
-		revenue = 10500 + discoveries_today * 700 + attempts_today * 160
+		var port_routes := int(port_economy_snapshot.get("arrivals", 2))
+		var visitors := int(port_economy_snapshot.get("visitors", 24))
+		revenue = 9800 + port_routes * 900 + visitors * 35 + discoveries_today * 700 + attempts_today * 160
 		var transport_cost := 3000 if weather == "强风" else (1700 if weather == "阵雨" else 900)
 		costs = 6500 + transport_cost + maxi(0, attempts_today - discoveries_today * 2) * 90
 		drivers.append("当日%d次新关系尝试、%d项首次发现" % [attempts_today, discoveries_today])
 		drivers.append("%s造成%d金贝运输与损耗成本" % [weather, transport_cost])
-		if attempts_today == 0:
-			drivers.append("造物研究停滞，运输订单偏少")
+		drivers.append("%d批船艇与%d名流动来客形成基础运输" % [port_routes, visitors])
 	else:
 		var completed_events := 0
 		var pool_total := 0
@@ -3688,10 +4192,11 @@ func _share_company_report(company_id: String, closing_day: int) -> Dictionary:
 				if amounts is Array:
 					for amount in amounts:
 						pool_total += maxi(0, int(amount))
-		revenue = 12000 + pool_total
+		var attendance := int(port_economy_snapshot.get("visitors", 24)) + 60
+		revenue = 7600 + attendance * 65 + pool_total
 		var weather_cost := 3500 if weather == "强风" else (1800 if weather == "阵雨" else 900)
 		costs = 7800 + int(round(float(pool_total) * RACE_TARGET_RETURN)) + weather_cost + maxi(0, 2 - completed_events) * 900
-		drivers.append("当日完成%d场赛事，封盘票池合计%d金贝" % [completed_events, pool_total])
+		drivers.append("到场约%d人，完成%d场赛事，封盘票池%d金贝" % [attendance, completed_events, pool_total])
 		drivers.append("按公开目标返还率预留赛事派彩")
 		drivers.append("%s带来%d金贝赛道维护成本" % [weather, weather_cost])
 	return {
@@ -3713,6 +4218,86 @@ func _eligible_dividend_quantity(company_id: String, closing_day: int) -> int:
 	return quantity
 
 
+func _build_share_order_book(company_id: String, closing_day: int, reference_price: int, fundamental: float) -> Array:
+	var local_rng := RandomNumberGenerator.new()
+	local_rng.seed = posmod(daily_seed, 2147483647) ^ (company_id.hash() * 31) ^ (closing_day * 49979687)
+	var book: Array = []
+	var accounts: Dictionary = share_accounts.get(company_id, {})
+	for raw_account_id in accounts.keys():
+		var account_id := str(raw_account_id)
+		var account: Dictionary = accounts[account_id]
+		var risk := float(account.get("risk_preference", 0.5))
+		var valuation := fundamental * (1.0 + local_rng.randf_range(-0.08, 0.08) * (0.5 + risk))
+		if account_id == "trend_traders":
+			valuation *= 1.0 + sign(float(reference_price) - float(share_previous_quotes.get(company_id, reference_price))) * 0.035
+		elif account_id == "panic_retail" and weather == "强风":
+			valuation *= 0.94
+		account["valuation"] = valuation
+		var holdings := maxi(0, int(account.get("holdings", 0)))
+		var target := clampi(int(round(float(holdings) + (valuation / float(reference_price) - 1.0) * (55.0 + risk * 90.0))), 0, 600)
+		account["target_holdings"] = target
+		if target > holdings:
+			var quantity := mini(target - holdings, int(account.get("cash", 0)) / maxi(20, int(floor(valuation))))
+			if quantity > 0:
+				book.append({"account_id": account_id, "side": "buy", "quantity": quantity, "limit_price": clampi(int(floor(valuation)), maxi(20, int(ceil(reference_price * 0.88))), int(floor(reference_price * 1.12)))})
+		elif target < holdings:
+			var quantity := mini(holdings - target, maxi(0, holdings - int(account.get("locked_today", 0))))
+			if quantity > 0:
+				book.append({"account_id": account_id, "side": "sell", "quantity": quantity, "limit_price": clampi(int(ceil(valuation)), maxi(20, int(ceil(reference_price * 0.88))), int(floor(reference_price * 1.12)))})
+		accounts[account_id] = account
+	share_accounts[company_id] = accounts
+	if not book.any(func(order): return str(order.get("side", "")) == "sell") and accounts.has("founders"):
+		var founder: Dictionary = accounts["founders"]
+		var sellable := maxi(0, int(founder.get("holdings", 0)) - int(founder.get("locked_today", 0)))
+		if sellable > 0:
+			book.append({"account_id": "founders", "side": "sell", "quantity": mini(6, sellable), "limit_price": clampi(int(ceil(reference_price * 1.02)), maxi(20, int(ceil(reference_price * 0.88))), int(floor(reference_price * 1.12)))})
+	if not book.any(func(order): return str(order.get("side", "")) == "buy") and accounts.has("external_traders"):
+		var external: Dictionary = accounts["external_traders"]
+		var buy_quantity := mini(6, int(external.get("cash", 0)) / maxi(20, reference_price))
+		if buy_quantity > 0:
+			book.append({"account_id": "external_traders", "side": "buy", "quantity": buy_quantity, "limit_price": clampi(int(floor(reference_price * 0.98)), maxi(20, int(ceil(reference_price * 0.88))), int(floor(reference_price * 1.12)))})
+	return book
+
+
+func _share_call_auction(company_id: String, reference_price: int, fundamental: float, book: Array) -> Dictionary:
+	var all_orders: Array = book.duplicate(true)
+	for raw_order in share_pending_orders:
+		if raw_order is Dictionary and str(raw_order.get("company_id", "")) == company_id:
+			all_orders.append({
+				"account_id": "player", "side": str(raw_order.get("side", "")),
+				"quantity": int(raw_order.get("remaining_quantity", raw_order.get("quantity", 0))),
+				"limit_price": int(raw_order.get("limit_price", reference_price))
+			})
+	var candidates: Array[int] = [maxi(20, int(ceil(reference_price * 0.88))), reference_price, int(floor(reference_price * 1.12))]
+	for raw_order in all_orders:
+		var price := maxi(20, int(raw_order.get("limit_price", reference_price)))
+		if not candidates.has(price):
+			candidates.append(price)
+	var best := {"price": reference_price, "volume": 0, "imbalance": 999999}
+	for candidate in candidates:
+		var buys := 0
+		var sells := 0
+		for raw_order in all_orders:
+			var order: Dictionary = raw_order
+			if str(order.get("side", "")) == "buy" and int(order.get("limit_price", 0)) >= candidate:
+				buys += maxi(0, int(order.get("quantity", 0)))
+			elif str(order.get("side", "")) == "sell" and int(order.get("limit_price", 999999)) <= candidate:
+				sells += maxi(0, int(order.get("quantity", 0)))
+		var volume := mini(buys, sells)
+		var imbalance: int = absi(buys - sells)
+		var better := volume > int(best["volume"])
+		if volume == int(best["volume"]):
+			better = imbalance < int(best["imbalance"])
+		if volume == int(best["volume"]) and imbalance == int(best["imbalance"]):
+			var candidate_value_distance: float = absf(float(candidate) - fundamental)
+			var best_value_distance: float = absf(float(best["price"]) - fundamental)
+			better = candidate_value_distance < best_value_distance or (is_equal_approx(candidate_value_distance, best_value_distance) and abs(candidate - reference_price) < abs(int(best["price"]) - reference_price))
+		if better:
+			best = {"price": candidate, "volume": volume, "imbalance": imbalance, "buy_quantity": buys, "sell_quantity": sells}
+	best["price"] = clampi(int(best["price"]), maxi(20, int(ceil(reference_price * 0.88))), int(floor(reference_price * 1.12)))
+	return best
+
+
 func _settle_share_market_day(closing_day: int) -> void:
 	if closing_day <= share_last_settled_day:
 		return
@@ -3721,54 +4306,87 @@ func _settle_share_market_day(closing_day: int) -> void:
 	var next_quotes := {}
 	var reports := {}
 	var dividend_lines: Array = []
-	var total_dividend := 0
+	var total_player_dividend := 0
 	for company_id in share_company_ids():
 		var company: Dictionary = SHARE_COMPANIES[company_id]
 		var current_price := int(share_quotes.get(company_id, int(company["base_price"])))
 		var report := _share_company_report(company_id, closing_day)
-		var target_profit := maxf(1.0, float(company["target_profit"]))
-		var margin_signal := (float(report["profit"]) - target_profit) / target_profit
-		var price_rng := RandomNumberGenerator.new()
-		price_rng.seed = posmod(daily_seed, 2147483647) ^ (company_id.hash() * 31) ^ (closing_day * 49979687)
-		var noise := price_rng.randf_range(-0.035, 0.035)
-		var change_rate := clampf(margin_signal * 0.055 + noise, -ShareMarketCatalog.MAX_DAILY_CHANGE, ShareMarketCatalog.MAX_DAILY_CHANGE)
-		var next_price := maxi(20, int(round(float(current_price) * (1.0 + change_rate))))
+		var financials: Dictionary = share_company_financials.get(company_id, {})
+		var profit := int(report["profit"])
+		var cash_flow := int(round(clampf(float(profit), -float(company["target_profit"]) * 1.5, float(company["target_profit"]) * 1.5) * 0.35))
+		financials["company_cash"] = maxi(0, int(financials.get("company_cash", 0)) + cash_flow)
+		financials["retained_earnings"] = int(financials.get("retained_earnings", 0)) + profit
+		financials["sustainable_profit"] = float(financials.get("sustainable_profit", company["target_profit"])) * 0.75 + float(profit) * 0.25
+		financials["last_business_cash_flow"] = cash_flow
+		var fundamental := _share_fundamental_value(company_id)
+		financials["fundamental_value"] = fundamental
+		var book := _build_share_order_book(company_id, closing_day, current_price, fundamental)
+		share_order_books[company_id] = book
+		var auction := _share_call_auction(company_id, current_price, fundamental, book)
+		# 没有真实成交时不应凭订单意向改写行情；无成交日自然形成横盘。
+		var next_price := current_price if int(auction.get("volume", 0)) <= 0 else int(auction["price"])
+		auction["price"] = next_price
 		var actual_change := float(next_price - current_price) / float(maxi(1, current_price))
-		var profit := maxi(0, int(report["profit"]))
-		var dividend_per_share := mini(
-			int(floor(float(profit) * 0.08 / float(int(company["total_shares"])))),
-			int(floor(float(current_price) * 0.02))
-		)
+		if cash_flow > 0 and int(financials["company_cash"]) > int(company["target_profit"]) * 3:
+			financials["dividend_reserve"] = int(financials.get("dividend_reserve", 0)) + int(floor(float(cash_flow) * 0.30))
 		var eligible_quantity := _eligible_dividend_quantity(company_id, closing_day)
-		var dividend := maxi(0, dividend_per_share * eligible_quantity)
-		total_dividend += dividend
+		var accounts_for_dividend: Dictionary = share_accounts.get(company_id, {})
+		var eligible_account_quantity := 0
+		for raw_account in accounts_for_dividend.values():
+			if raw_account is Dictionary:
+				eligible_account_quantity += maxi(0, int(raw_account.get("holdings", 0)) - int(raw_account.get("locked_today", 0)))
+		var eligible_circulating := eligible_quantity + eligible_account_quantity
+		var dividend_per_share := int(financials.get("dividend_reserve", 0)) / maxi(1, eligible_circulating)
+		dividend_per_share = mini(dividend_per_share, int(floor(float(current_price) * 0.02)))
+		var player_dividend := maxi(0, dividend_per_share * eligible_quantity)
+		var total_dividend := maxi(0, dividend_per_share * eligible_circulating)
+		if total_dividend > int(financials.get("company_cash", 0)) or total_dividend > int(financials.get("dividend_reserve", 0)):
+			dividend_per_share = 0
+			player_dividend = 0
+			total_dividend = 0
+		if total_dividend > 0:
+			financials["company_cash"] = int(financials["company_cash"]) - total_dividend
+			financials["dividend_reserve"] = int(financials["dividend_reserve"]) - total_dividend
+			var accounts: Dictionary = share_accounts.get(company_id, {})
+			for account_id in accounts.keys():
+				var account: Dictionary = accounts[account_id]
+				var eligible_account_shares := maxi(0, int(account.get("holdings", 0)) - int(account.get("locked_today", 0)))
+				account["cash"] = int(account.get("cash", 0)) + eligible_account_shares * dividend_per_share
+				accounts[account_id] = account
+			share_accounts[company_id] = accounts
+		total_player_dividend += player_dividend
 		report["change_rate"] = actual_change
 		report["previous_price"] = current_price
 		report["next_price"] = next_price
+		report["auction"] = auction
+		report["fundamental_value"] = fundamental
+		report["company_cash"] = int(financials.get("company_cash", 0))
 		report["dividend_per_share"] = dividend_per_share
 		report["eligible_quantity"] = eligible_quantity
-		report["player_dividend"] = dividend
+		report["player_dividend"] = player_dividend
 		reports[company_id] = report
 		next_quotes[company_id] = next_price
+		share_company_financials[company_id] = financials
 		dividend_lines.append({
 			"company_id": company_id,
 			"quantity": eligible_quantity,
 			"per_share": dividend_per_share,
-			"amount": dividend
+			"amount": player_dividend,
+			"company_outflow": total_dividend
 		})
 	share_company_reports = reports
 	share_next_quotes = next_quotes
 	share_last_settled_day = closing_day
-	if total_dividend > 0:
-		cash += total_dividend
+	if total_player_dividend > 0:
+		cash += total_player_dividend
 	share_dividend_history.push_front({
 		"day": closing_day,
-		"total": total_dividend,
+		"total": total_player_dividend,
 		"lines": dividend_lines
 	})
 	if share_dividend_history.size() > 32:
 		share_dividend_history.resize(32)
-	if total_dividend > 0:
+	if total_player_dividend > 0:
 		_record_wealth("商会份契 · 第%d日分红" % closing_day)
 
 
@@ -3783,6 +4401,13 @@ func _open_share_market_day() -> void:
 		for company_id in share_company_ids():
 			share_quotes[company_id] = maxi(20, int(share_next_quotes.get(company_id, share_quotes.get(company_id, SHARE_COMPANIES[company_id]["base_price"]))))
 		share_next_quotes.clear()
+	for company_id in share_company_ids():
+		var accounts: Dictionary = share_accounts.get(company_id, {})
+		for account_id in accounts.keys():
+			var account: Dictionary = accounts[account_id]
+			account["locked_today"] = 0
+			accounts[account_id] = account
+		share_accounts[company_id] = accounts
 	share_market_day = day
 	share_price_history.push_front({
 		"day": day,
@@ -3821,6 +4446,12 @@ func share_market_rows() -> Array:
 		var market_value := quantity * price
 		var cost_value := average_cost * float(quantity)
 		var report = share_company_reports.get(company_id, {})
+		var depth: Dictionary = share_intraday_depth.get(company_id, {})
+		var financials: Dictionary = share_company_financials.get(company_id, {})
+		var holders: Array = []
+		for account_id in share_accounts.get(company_id, {}).keys():
+			var account: Dictionary = share_accounts[company_id][account_id]
+			holders.append({"id": str(account_id), "name": str(account.get("name", account_id)), "quantity": int(account.get("holdings", 0))})
 		result.append({
 			"company_id": company_id,
 			"name": str(company["name"]),
@@ -3840,6 +4471,14 @@ func share_market_rows() -> Array:
 			"liquidation_value": int(floor(float(market_value) * ShareMarketCatalog.CONSERVATIVE_LIQUIDATION_RATE)),
 			"unrealized": float(market_value) - cost_value,
 			"player_cap": int(company["player_cap"]),
+			"issued_shares": int(company["total_shares"]),
+			"issued_total_check": share_issued_total(company_id),
+			"company_inventory": int(financials.get("company_inventory", 0)),
+			"bid_depth": int(depth.get("bid_total", 0)),
+			"ask_depth": int(depth.get("ask_total", 0)),
+			"holders": holders,
+			"financials": financials.duplicate(true),
+			"fundamental_value": float(financials.get("fundamental_value", price)),
 			"report": report.duplicate(true) if report is Dictionary else {}
 		})
 	return result

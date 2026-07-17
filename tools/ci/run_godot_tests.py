@@ -28,6 +28,10 @@ BLOCKING_TESTS: tuple[tuple[str, str], ...] = (
     ),
     ("res://tests/fish_market_system_test.gd", "FISH MARKET SYSTEM TEST PASS"),
     (
+        "res://tests/world_economy_system_test.gd",
+        "WORLD ECONOMY SYSTEM TEST PASS",
+    ),
+    (
         "res://tests/economy_equipment_order_test.gd",
         "ECONOMY EQUIPMENT ORDER TEST PASS",
     ),

@@ -12,6 +12,7 @@ const SynthesisTableScript = preload("res://scripts/synthesis_table.gd")
 const DiveTableScript = preload("res://scripts/dive_table.gd")
 const WealthChartScript = preload("res://scripts/wealth_chart.gd")
 const RaceReplayScript = preload("res://scripts/race_replay.gd")
+const RaceArenaScript = preload("res://scripts/race_arena.gd")
 const WorldLayoutScript = preload("res://scripts/world_layout.gd")
 const MapOverviewScript = preload("res://scripts/map_overview.gd")
 const NpcCatalogScript = preload("res://scripts/npc_catalog.gd")
@@ -77,6 +78,7 @@ var race_bet_spin: SpinBox
 var race_preview_label: Label
 var race_event_id: String = ""
 var race_replay: Control
+var race_arena: Control
 
 
 func _ready() -> void:
@@ -132,7 +134,8 @@ func _process(delta: float) -> void:
 	var dive_interface_open: bool = dive_table != null and dive_table.visible and dive_table.mode != "dive"
 	var formal_activity_open: bool = (synthesis_table != null and synthesis_table.visible) or (poker_table != null and poker_table.visible) or dive_activity_open
 	game.set_time_pause("formal_activity", formal_activity_open, game.TIME_STATE_ACTIVITY)
-	game.set_time_pause("interface", (modal_overlay != null and modal_overlay.visible) or dive_interface_open, game.TIME_STATE_UI)
+	var race_interface_open: bool = race_arena != null and race_arena.visible
+	game.set_time_pause("interface", (modal_overlay != null and modal_overlay.visible) or dive_interface_open or race_interface_open, game.TIME_STATE_UI)
 	if game.advance_world_delta(delta):
 		clock_hud_elapsed += delta
 		if clock_hud_elapsed >= 0.5:
@@ -163,6 +166,10 @@ func _notification(what: int) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if race_arena != null and race_arena.visible and event.is_action_pressed("ui_cancel"):
+		race_arena.close()
+		get_viewport().set_input_as_handled()
+		return
 	if title_overlay != null and title_overlay.visible:
 		get_viewport().set_input_as_handled()
 		return
@@ -471,6 +478,11 @@ func _build_ui() -> void:
 	dive_table.closed.connect(_on_dive_table_closed)
 	dive_table.checkpoint_requested.connect(_on_dive_checkpoint_requested)
 	ui_root.add_child(dive_table)
+	race_arena = RaceArenaScript.new()
+	race_arena.closed.connect(_on_race_arena_closed)
+	race_arena.race_requested.connect(_run_race_from_arena)
+	race_arena.history_requested.connect(_open_race_history_from_arena)
+	ui_root.add_child(race_arena)
 
 
 func _build_title_screen() -> void:
@@ -2194,12 +2206,22 @@ func _open_resident(resident_id: String) -> void:
 func _open_news() -> void:
 	_open_modal("《晴潮晨报》")
 	modal_body.add_child(_make_text("第%d日 · %s · %s · 公开赛事与鱼市观察" % [game.day, game.weather, game.wind_direction], Color("ffe7a6")))
+	var port: Dictionary = game.port_economy_snapshot
+	modal_body.add_child(_make_text("开放港口 · 常住%d人 · 今日流动%d人 · 到港船次%d · %d组公共经济账户" % [
+		int(port.get("residents", 0)), int(port.get("visitors", 0)), int(port.get("arrivals", 0)), int(port.get("groups", game.world_group_accounts.size()))
+	], Color("9edfc4")))
+	if not game.world_economy_flows.is_empty():
+		var recent_flows: Array[String] = []
+		for raw_flow in game.world_economy_flows.slice(maxi(0, game.world_economy_flows.size() - 2)):
+			var flow: Dictionary = raw_flow
+			recent_flows.append("%s %d金贝" % [str(flow.get("tag", "公开经济流动")), int(flow.get("amount", 0))])
+		modal_body.add_child(_make_text("最近港口流动：%s" % "；".join(recent_flows), Color("91bdb8")))
 	var fish_rows: Array = game.fish_market_rows()
 	if not fish_rows.is_empty():
 		modal_body.add_child(_make_text("蓝鳍鱼铺 · 当前重点行情", Color("9edfc4")))
 		for fish_index in range(mini(3, fish_rows.size())):
 			var fish_row: Dictionary = fish_rows[fish_index]
-			modal_body.add_child(_make_text("%s %d金贝 · 需求%d条 · %s" % [str(fish_row["name"]), int(fish_row["quote"]), int(fish_row["demand"]), "；".join(fish_row["reasons"])], Color("bfe2d7")))
+			modal_body.add_child(_make_text("%s %d金贝 · 未完成订单%d · 库存%d · 预计到货%d · %s" % [str(fish_row["name"]), int(fish_row["quote"]), int(fish_row["demand"]), int(fish_row["stock"]), int(fish_row["expected_arrivals"]), "；".join(fish_row["reasons"])], Color("bfe2d7")))
 		modal_body.add_child(_make_button("前往蓝鳍鱼铺", _open_dive.bind("market")))
 	modal_body.add_child(HSeparator.new())
 	var known_people: Array = game.npc_map_entries()
@@ -2285,6 +2307,15 @@ func _open_share_market(message: String = "") -> void:
 		heading.add_child(price_label)
 		box.add_child(heading)
 		box.add_child(_make_text(str(row["description"]), Color("a9c6c3")))
+		var financials: Dictionary = row.get("financials", {})
+		box.add_child(_make_text("总发行1,000份 · 校验%d · 玩家%d · 商会库存%d · 买方深度%d · 卖方深度%d" % [
+			int(row.get("issued_total_check", 0)), int(row.get("quantity", 0)), int(row.get("company_inventory", 0)),
+			int(row.get("bid_depth", 0)), int(row.get("ask_depth", 0))
+		], Color("9edfc4")))
+		box.add_child(_make_text("公司现金%d · 资产%d · 债务%d · 留存%+d · 分红准备%d · 基本价值约%.1f" % [
+			int(financials.get("company_cash", 0)), int(financials.get("productive_assets", 0)), int(financials.get("debt", 0)),
+			int(financials.get("retained_earnings", 0)), int(financials.get("dividend_reserve", 0)), float(row.get("fundamental_value", row["price"]))
+		], Color("b8d3cf")))
 		var report: Dictionary = row.get("report", {})
 		box.add_child(_make_text("昨日经营：收入%d · 成本%d · 利润%+d · 每份分红%d" % [
 			int(report.get("revenue", 0)), int(report.get("costs", 0)), int(report.get("profit", 0)), int(report.get("dividend_per_share", 0))
@@ -2304,10 +2335,10 @@ func _open_share_market(message: String = "") -> void:
 		var sell_one_proceeds: int = int(row["price"]) - int(game.share_trade_fee(int(row["price"])))
 		var cap_remaining := int(row["player_cap"]) - int(row["quantity"])
 		if bool(status["open"]):
-			actions.add_child(_make_button("买1 · %d" % buy_one_total, _trade_shares.bind(str(row["company_id"]), "buy", 1), not access or game.cash < buy_one_total or cap_remaining < 1))
-			actions.add_child(_make_button("买5 · %d" % buy_five_total, _trade_shares.bind(str(row["company_id"]), "buy", 5), not access or game.cash < buy_five_total or cap_remaining < 5))
-			actions.add_child(_make_button("卖1 · 收%d" % sell_one_proceeds, _trade_shares.bind(str(row["company_id"]), "sell", 1), not access or int(row["sellable"]) < 1))
-			actions.add_child(_make_button("卖出全部可售", _trade_shares.bind(str(row["company_id"]), "sell", int(row["sellable"])), not access or int(row["sellable"]) < 1))
+			actions.add_child(_make_button("买1 · %d" % buy_one_total, _trade_shares.bind(str(row["company_id"]), "buy", 1), not access or game.cash < buy_one_total or cap_remaining < 1 or int(row.get("ask_depth", 0)) < 1))
+			actions.add_child(_make_button("买5 · %d" % buy_five_total, _trade_shares.bind(str(row["company_id"]), "buy", 5), not access or game.cash < buy_five_total or cap_remaining < 5 or int(row.get("ask_depth", 0)) < 1))
+			actions.add_child(_make_button("卖1 · 收%d" % sell_one_proceeds, _trade_shares.bind(str(row["company_id"]), "sell", 1), not access or int(row["sellable"]) < 1 or int(row.get("bid_depth", 0)) < 1))
+			actions.add_child(_make_button("卖出全部可售", _trade_shares.bind(str(row["company_id"]), "sell", int(row["sellable"])), not access or int(row["sellable"]) < 1 or int(row.get("bid_depth", 0)) < 1))
 		else:
 			var reserve_one := int(game.share_overnight_buy_reserve(str(row["company_id"]), 1))
 			var reserve_five := int(game.share_overnight_buy_reserve(str(row["company_id"]), 5))
@@ -2526,6 +2557,12 @@ func _on_poker_table_closed() -> void:
 
 
 func _open_race() -> void:
+	modal_overlay.visible = false
+	race_arena.open(game)
+	race_bet_spin = race_arena.bet_spin
+	race_event_id = race_arena.event_id
+	player.controls_enabled = false
+	return
 	_open_modal("逐风竞速 · 今日四场")
 	modal_body.add_child(_art_banner(RaceBanner, 190.0))
 	modal_body.add_child(_make_text("每个时段只有一场正式赛事。阵容、天气与开盘票池已经锁定；购票后仍会有NPC在封盘前加入，当前赔率是预计返还，结算使用封盘赔率。造物只提供信息，不改变赛果、票池或随机种子。", Color("c9f6d8")))
@@ -2685,6 +2722,9 @@ func _update_race_preview(_selected_index: int) -> void:
 
 
 func _run_race() -> void:
+	if race_arena != null and race_arena.visible:
+		_run_race_from_arena(race_arena.selected_beast, race_arena.selected_ticket, int(race_arena.bet_spin.value), race_arena.selected_aid, race_arena.event_id)
+		return
 	var beast_index := race_beast_option.selected
 	var ticket_type := race_ticket_option.get_item_text(race_ticket_option.selected)
 	var aid_id := str(race_aid_option.get_item_metadata(race_aid_option.selected))
@@ -2748,6 +2788,25 @@ func _run_race() -> void:
 		modal_body.add_child(_make_button("返回今日赛程", _open_race))
 
 
+func _run_race_from_arena(beast_index: int, ticket_type: String, stake: int, aid_id: String, event_id: String) -> void:
+	game.save_game("user://saves/activity_race.json", _world_save_state(), true)
+	var result: Dictionary = game.run_race(beast_index, ticket_type, stake, aid_id, event_id)
+	race_arena.show_result(result)
+	if bool(result.get("ok", false)):
+		race_replay = race_arena.replay
+	_refresh_hud()
+
+
+func _on_race_arena_closed() -> void:
+	player.controls_enabled = true
+	_refresh_hud()
+
+
+func _open_race_history_from_arena() -> void:
+	race_arena.visible = false
+	_open_race_history()
+
+
 func _wait_for_next_race(amount: float) -> void:
 	if amount <= 0.0 or not game.fast_forward_time(amount, "等待下一场逐风赛事"):
 		_show_result("无法等待", "当前无法推进到下一场赛事。", _open_race)
@@ -2801,6 +2860,10 @@ func _open_map() -> void:
 	modal_body.add_child(overview)
 	modal_body.add_child(_make_text("白圈是当前位置；地点节点对应真实入口。人物标记只显示已认识NPC所在的区域，不公开其精确脚下坐标。已发现区域之间快速前往消耗0.25潮刻。", Color("bde9f2")))
 	modal_body.add_child(_make_text("当前：第%d天%s · %s · %s" % [game.day, game.phase_name(), game.weather, game.wind_direction], Color("f1d687")))
+	var port: Dictionary = game.port_economy_snapshot
+	modal_body.add_child(_make_text("开放港口：常住%d人 · 流动%d人 · 到港船次%d · %d组公共经济账户共同形成今日鱼市、商会与服务流量。" % [
+		int(port.get("residents", 0)), int(port.get("visitors", 0)), int(port.get("arrivals", 0)), int(port.get("groups", game.world_group_accounts.size()))
+	], Color("9edfc4")))
 	if not npc_entries.is_empty():
 		modal_body.add_child(_make_text("已认识人物", Color("f1d687")))
 		for raw_entry in npc_entries:

@@ -59,28 +59,48 @@ func _test_market_refresh_and_atomic_sale() -> void:
 	var second := _state()
 	assert(first.fish_market_quotes == second.fish_market_quotes and first.fish_market_stock == second.fish_market_stock, "相同每日种子必须生成相同初始行情。")
 	var history_before := first.fish_market_history.size()
+	var rare_id := "crowned_goldscale"
+	first.fish_market_stock[rare_id] = 0
+	first.fish_market_expected_arrivals[rare_id] = 0
+	first.fish_market_cohort_accounts["exporters"]["orders"] = [{"order_id": "persistent-rare", "buyer_id": "exporters", "species_id": rare_id, "quantity": 1, "remaining": 1, "completed": 0, "max_price": 180, "expires_day": first.day + 1}]
+	first._recompute_fish_market_demand()
+	var quotes_before := first.fish_market_quotes.duplicate(true)
 	first.tide = 4
 	first.tide_progress = 0.9
 	first.advance_time_fraction(0.1, "鱼市边界测试")
 	assert(first.tide == 5 and first.fish_market_refresh_index == 1 and first.fish_market_history.size() == history_before + 1, "鱼市必须只在时段边界按序刷新。")
+	assert(first.fish_market_cohort_accounts["exporters"]["orders"].any(func(order): return str(order.get("order_id", "")) == "persistent-rare"), "未完成且未过期的群体订单不得在时段刷新时全部重掷。")
+	for species_id in quotes_before.keys():
+		var old_quote := int(quotes_before[species_id])
+		var new_quote := int(first.fish_market_quotes[species_id])
+		assert(new_quote >= int(floor(old_quote * 0.90)) and new_quote <= int(ceil(old_quote * 1.10)), "单时段鱼价变化必须限制在±10%。")
 
 	var state := _state()
 	var species_id := "bubble_sardine"
 	state.fish_market_quotes[species_id] = 20
-	state.fish_market_demand[species_id] = 2
 	state.fish_market_stock[species_id] = 5
+	state.fish_market_external_reference[species_id] = 8
+	state.fish_market_cohort_accounts = {
+		"residents": {"name": "岛内居民", "cash": 1000, "budget": 1000, "tags": ["日常食用"], "orders": [
+			{"order_id": "controlled", "buyer_id": "residents", "species_id": species_id, "quantity": 2, "remaining": 2, "completed": 0, "max_price": 30, "expires_day": state.day + 1}
+		]}
+	}
+	state._recompute_fish_market_demand()
 	for index in range(8):
 		state.fish_catch_inventory.append(_catch("sale_catch_%d" % index, species_id, "标准", state.day))
 	var ids: Array = state.fish_catch_inventory.map(func(catch_record): return str(catch_record["catch_id"]))
 	var preview := state.create_fish_sale_preview(ids)
 	assert(bool(preview.get("ok", false)) and int(preview["count"]) == 8, "批量出售必须为每条鱼获生成不可变预览。")
 	var tiers: Array = preview["lines"].map(func(line): return str(line["tier"]))
-	assert(tiers.count("重点需求") == 2 and tiers.count("普通加工85%") == 2 and tiers.count("大量加工60%") == 4, "超出重点需求后必须依次进入85%与大量加工档。")
+	assert(tiers.count("直接订单") == 2 and tiers.count("可售库存85%") == 2 and tiers.count("加工出口60%") == 4, "每条鱼必须依次进入直接订单、可售库存或加工出口的唯一业务路径。")
 	assert(int(preview["total"]) == 94, "分档售价必须同时应用报价、尺寸和新鲜度并准确汇总。")
 	var cash_before := state.cash
 	var settled := state.confirm_fish_sale(str(preview["sale_id"]))
 	assert(bool(settled.get("ok", false)) and state.cash == cash_before + 94, "确认出售必须原子增加预览中的金贝。")
-	assert(state.fish_catch_inventory.is_empty() and int(state.fish_market_stock[species_id]) == 13 and int(state.fish_market_demand[species_id]) == 0, "出售必须同步减少鱼获、增加库存并消耗重点需求。")
+	assert(state.fish_catch_inventory.is_empty() and int(state.fish_market_stock[species_id]) == 7 and int(state.fish_market_demand[species_id]) == 0 and int(state.fish_market_processing[species_id]) == 4, "出售后两条鱼只完成订单、两条只进入库存、四条只进入加工，不得双重记账。")
+	var transaction: Dictionary = state.fish_market_transactions[-1]
+	assert(int(transaction["routes"]["direct_order"]) + int(transaction["routes"]["inventory"]) + int(transaction["routes"]["processing"]) == 8, "唯一业务路由数量之和必须等于实际移除鱼获数。")
+	assert(state.fish_market_actual_sales.size() == 2, "只有直接满足的两条订单在本时点形成实际销量；库存和加工不得提前伪造收入。")
 	var duplicate_cash := state.cash
 	var duplicate := state.confirm_fish_sale(str(preview["sale_id"]))
 	assert(not bool(duplicate.get("ok", true)) and bool(duplicate.get("duplicate", false)) and state.cash == duplicate_cash, "同一成交编号最多只能结算一次。")
@@ -112,6 +132,7 @@ func _test_freshness_orders_and_save_state() -> void:
 	assert(bool(restored.restore_save_data(saved).get("ok", false)), "潜捕与鱼市字段必须能通过版本化存档恢复。")
 	assert(restored.dive_active and restored.dive_scene_seed == save_state.dive_scene_seed and restored.dive_state["candidates"] == save_state.dive_state["candidates"], "读档不得重掷已锁定潜捕场景。")
 	assert(restored.fish_market_quotes == save_state.fish_market_quotes and restored.fish_market_history == save_state.fish_market_history, "读档不得重新计算历史行情。")
+	assert(restored.fish_market_cohort_accounts == save_state.fish_market_cohort_accounts and restored.fish_market_expected_arrivals == save_state.fish_market_expected_arrivals and restored.fish_market_processing == save_state.fish_market_processing, "持续订单、预计到货和加工状态必须跨存档原样保留。")
 
 
 func _test_income_band() -> void:

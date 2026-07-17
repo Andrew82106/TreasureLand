@@ -43,16 +43,25 @@ func _test_tutorial_state_and_version_migration() -> void:
 	assert(bool(complete["complete"]) and int(complete["completed_count"]) == 7, "七个步骤必须全部从真实模块状态得出完成结果。")
 	state.set_journey_tutorial_hidden(true)
 	var saved: Dictionary = state.build_save_data()
-	assert(int(saved.get("version", 0)) == 9, "旅程引导必须进入版本9存档。")
+	assert(int(saved.get("version", 0)) == GameStateScript.SAVE_VERSION, "旅程引导必须进入当前版本存档。")
 	var restored = _state()
-	assert(bool(restored.restore_save_data(saved).get("ok", false)), "版本9引导状态必须可以往返读取。")
+	assert(bool(restored.restore_save_data(saved).get("ok", false)), "当前版本引导状态必须可以往返读取。")
 	assert(bool(restored.journey_tutorial_state()["complete"]) and restored.journey_tutorial_hidden, "引导动作、真实进度与隐藏偏好必须完整保存。")
+	var version9: Dictionary = saved.duplicate(true)
+	version9["version"] = 9
+	for key in ["fish_market_cohort_accounts", "fish_market_expected_arrivals", "fish_market_external_reference", "fish_market_actual_sales", "fish_market_processing", "share_accounts", "share_company_financials", "share_order_books", "share_intraday_depth", "share_market_maintenance_cash", "world_group_accounts", "world_external_account", "world_economy_flows", "port_economy_snapshot"]:
+		version9["state"].erase(key)
+	var economy_migrated = _state()
+	assert(bool(economy_migrated.restore_save_data(version9).get("ok", false)), "版本9存档必须迁移到版本10经济账本。")
+	assert(economy_migrated.world_group_accounts.size() >= 5 and economy_migrated.fish_market_cohort_accounts.size() >= 4, "版本9迁移必须补齐港口群体与鱼市持续订单。")
+	for company_id in economy_migrated.share_company_ids():
+		assert(economy_migrated.share_issued_total(company_id) == 1000, "版本9迁移必须重建固定1000份的真实持有人账本。")
 	var legacy: Dictionary = saved.duplicate(true)
 	legacy["version"] = 8
 	legacy["state"].erase("journey_tutorial_actions")
 	legacy["state"].erase("journey_tutorial_hidden")
 	var migrated = _state()
-	assert(bool(migrated.restore_save_data(legacy).get("ok", false)), "版本8存档必须迁移到版本9。")
+	assert(bool(migrated.restore_save_data(legacy).get("ok", false)), "版本8存档必须迁移到当前版本。")
 	assert(not migrated.journey_tutorial_hidden and bool(migrated.journey_tutorial_state()["complete"]), "旧档迁移必须从已有模块事实重建进度，不能强迫老玩家重做。")
 
 
@@ -99,7 +108,9 @@ func _test_title_continue_and_new_game() -> void:
 	new_scene.game.known_npcs["granny"] = true
 	new_scene.game.npc_request_states["granny"] = {"state": "active", "accepted_day": 1, "completed_day": 0}
 	new_scene._open_map()
-	assert(_tree_contains_text(new_scene.modal_body, "今日营业与活动") and _tree_contains_text(new_scene.modal_body, "地图金色菱形"), "地图必须同时显示营业摘要与主动委托追踪说明。")
+	assert(_tree_contains_text(new_scene.modal_body, "今日营业与活动") and _tree_contains_text(new_scene.modal_body, "地图金色菱形") and _tree_contains_text(new_scene.modal_body, "开放港口"), "地图必须同时显示营业摘要、主动委托追踪与港口人口尺度。")
+	new_scene._open_news()
+	assert(_tree_contains_text(new_scene.modal_body, "常住") and _tree_contains_text(new_scene.modal_body, "预计到货"), "晨报必须公开港口尺度以及鱼市库存、持续订单和预计到货。")
 	new_scene.game.tide = 4
 	new_scene.game.tide_progress = 0.9
 	new_scene.game.fish_catch_inventory = [{"catch_id": "warning-fish", "species_id": "bubble_sardine", "caught_day": 1}]

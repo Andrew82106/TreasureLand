@@ -11,6 +11,7 @@ func _init() -> void:
 
 func _run() -> void:
 	_test_market_rules_and_daily_settlement()
+	_test_finite_counterparties_and_cash_dividend()
 	_test_determinism_and_save_roundtrip()
 	await _test_player_reachable_ui()
 	print("SHARE MARKET SYSTEM TEST PASS")
@@ -28,6 +29,10 @@ func _test_market_rules_and_daily_settlement() -> void:
 	assert(state.share_company_ids() == ["bluefin", "wayfarer", "windring"], "首版必须固定为三家可理解产业。")
 	assert(not state.can_trade_shares(), "新玩家只能查看公开经营信息，不能直接交易。")
 	assert(state.share_market_rows().size() == 3 and state.share_market_is_open(), "清晨必须以三家固定报价开盘。")
+	for company_id in state.share_company_ids():
+		assert(state.share_issued_total(company_id) == 1000, "%s的玩家、集合账户与商会库存持仓之和必须恒为1,000。" % company_id)
+		assert(state.share_accounts[company_id].size() >= 6, "每家公司必须有多个有限现金与持仓的真实集合账户。")
+		assert(int(state.share_intraday_depth[company_id]["bid_total"]) > 0 and int(state.share_intraday_depth[company_id]["ask_total"]) > 0, "开盘必须展示有限且非零的买卖深度。")
 	state.tide = 10
 	state.advance_time(1)
 	assert(not state.share_market_is_open() and state.time_event_log.any(func(event): return str(event.get("kind", "")) == "share_close"), "跨入第11潮刻必须形成统一收盘边界事件。")
@@ -43,6 +48,7 @@ func _test_market_rules_and_daily_settlement() -> void:
 	assert(bool(buy.get("ok", false)), "开放时段必须能即时买入。")
 	assert(state.cash == cash_before - bluefin_price * 5 - fee, "买入必须精确扣除成交额与1%费用。")
 	assert(state.share_quantity("bluefin") == 5 and state.share_sellable_quantity("bluefin") == 0, "当日买入必须形成T+1锁定持仓。")
+	assert(state.share_issued_total("bluefin") == 1000 and state.share_trade_history[0].get("counterparties", []).size() > 0, "买入必须从真实对手方转移份契，不能由系统无限增发。")
 	assert(not bool(state.trade_shares("bluefin", "sell", 1).get("ok", true)), "当日买入不得立刻卖出套利。")
 	assert(state.net_worth() == state.account_wealth() + state.share_liquidation_value(), "份契保守变现值必须进入净资产而非当前金贝。")
 
@@ -82,6 +88,30 @@ func _test_market_rules_and_daily_settlement() -> void:
 	assert(state.cash == cash_before_dividend + int(latest_dividend.get("total", 0)), "分红总额必须与玩家现金变化一致。")
 
 
+func _test_finite_counterparties_and_cash_dividend() -> void:
+	var state = _state()
+	state.cash = 200000
+	state.can_trade_shares()
+	var depth_before := int(state.share_intraday_depth["bluefin"]["ask_total"])
+	var oversized: Dictionary = state.trade_shares("bluefin", "buy", mini(600, depth_before + 20))
+	assert(bool(oversized.get("ok", false)) and int(oversized.get("quantity", 0)) <= depth_before and bool(oversized.get("partial", false)), "日内大额买单最多吃掉可见卖方深度，深度之外必须部分成交。")
+	assert(state.share_issued_total("bluefin") == 1000 and state.share_market_maintenance_cash == int(oversized.get("fee", 0)), "部分成交后总发行量与市场维护费仍须守恒。")
+	state.day = 2
+	for company_id in state.share_company_ids():
+		state.share_company_financials[company_id]["dividend_reserve"] = 200000
+		state.share_company_financials[company_id]["company_cash"] = 300000
+		for account_id in state.share_accounts[company_id].keys():
+			state.share_accounts[company_id][account_id]["locked_today"] = 0
+	var total_before := _whole_market_cash(state)
+	state._settle_share_market_day(2)
+	var total_after := _whole_market_cash(state)
+	var business_cash_flow := 0
+	for company_id in state.share_company_ids():
+		business_cash_flow += int(state.share_company_financials[company_id]["last_business_cash_flow"])
+	assert(total_after - total_before == business_cash_flow, "分红只能在公司与持有人之间转移；全市场现金变化必须只等于外部经营现金流。")
+	assert(state.share_dividend_history[0].get("lines", []).any(func(line): return int(line.get("company_outflow", 0)) > 0), "充足盈利与准备金条件下必须形成可审计的公司现金分红。")
+
+
 func _test_determinism_and_save_roundtrip() -> void:
 	var first = _state()
 	var second = _state()
@@ -104,6 +134,18 @@ func _test_determinism_and_save_roundtrip() -> void:
 	assert(restored.share_lots == first.share_lots, "持仓批次与成本必须跨存档保留。")
 	assert(restored.share_pending_orders == first.share_pending_orders, "隔夜订单必须跨存档保留。")
 	assert(restored.share_reserved_cash == first.share_reserved_cash and restored.account_wealth() == first.account_wealth(), "冻结现金必须跨存档保持资金守恒。")
+	assert(restored.share_accounts == first.share_accounts and restored.share_company_financials == first.share_company_financials and restored.share_order_books == first.share_order_books and restored.share_intraday_depth == first.share_intraday_depth, "真实持有人、公司现金、订单簿与有限深度必须跨存档原样保留。")
+	for company_id in restored.share_company_ids():
+		assert(restored.share_issued_total(company_id) == 1000, "读档与迁移后总发行量必须仍为1,000。")
+
+
+func _whole_market_cash(state) -> int:
+	var total := int(state.cash) + int(state.share_reserved_cash) + int(state.share_market_maintenance_cash)
+	for company_id in state.share_company_ids():
+		total += int(state.share_company_financials[company_id].get("company_cash", 0))
+		for raw_account in state.share_accounts[company_id].values():
+			total += int(raw_account.get("cash", 0))
+	return total
 
 
 func _test_player_reachable_ui() -> void:

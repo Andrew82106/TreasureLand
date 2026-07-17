@@ -12,7 +12,7 @@ func _run() -> void:
 	_test_daily_schedule_pool_and_odds()
 	_test_seal_history_time_and_save()
 	_test_aid_does_not_change_event()
-	await _test_race_ui_history_and_replay()
+	await _test_fullscreen_race_arena()
 	print("RACE EVENT SYSTEM TEST PASS")
 	quit(0)
 
@@ -131,6 +131,52 @@ func _test_race_ui_history_and_replay() -> void:
 	scene._open_time_menu()
 	await process_frame
 	assert(_tree_contains_text(scene.modal_body, "今日逐风赛事") and _tree_contains_text(scene.modal_body, "已完赛"), "日程页必须读取同一份赛事状态。")
+	scene.free()
+	var activity_path := "user://saves/activity_race.json"
+	if FileAccess.file_exists(activity_path):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(activity_path))
+
+
+func _test_fullscreen_race_arena() -> void:
+	root.size = Vector2i(1280, 720)
+	var scene = MainScene.instantiate()
+	scene.title_screen_enabled = false
+	root.add_child(scene)
+	await process_frame
+	scene.game.cash = 1000
+	scene.game.free_race_ticket = 0
+	var cash_before_view: int = int(scene.game.cash)
+	var tide_before_view: int = int(scene.game.tide)
+	scene._open_race()
+	await process_frame
+	assert(scene.race_arena.visible and scene.race_arena.arena_grid != null and scene.race_arena.beast_buttons.size() == 8, "逐风竞速必须使用独立全屏赛场，并把八匹赛兽放在中央直接选择。")
+	assert(_tree_contains_text(scene.race_arena, "晨风试走") and _tree_contains_text(scene.race_arena, "票池显示岛民选择"), "赛前页面必须在中央赛兽周围展示四场日程和公开票池解释。")
+	scene.race_arena._select_beast(4)
+	assert(scene.race_arena.selected_beast == 4 and _tree_contains_text(scene.race_arena.right_panel, "雾步"), "点击中央赛兽后，右侧近况、风险和赔率必须同步同一选择。")
+	assert(scene.game.cash == cash_before_view and scene.game.tide == tide_before_view, "赛前查看、选兽和研读不得提前扣款或推进潮刻。")
+	scene.race_arena.close()
+	assert(scene.game.cash == cash_before_view and scene.game.tide == tide_before_view, "封盘前离开赛场不得扣款、收费或推进时间。")
+	scene._open_race()
+	scene.race_arena._select_beast(4)
+	scene.race_bet_spin.value = 100
+	scene.race_arena._request_start()
+	await process_frame
+	assert(scene.race_replay != null and scene.race_replay.replay_result.get("stage_reports", []).size() == 4, "正式比赛必须创建可播放的四段动态赛道。")
+	assert(scene.race_arena.mode == "race" and is_equal_approx(scene.race_replay.duration, 28.0), "正式比赛必须在同一全屏页面进入25—35秒实际赛道演出。")
+	var settled_cash: int = int(scene.game.cash)
+	var settled_tide: int = int(scene.game.tide)
+	var settled_history: int = scene.game.race_history.size()
+	scene.race_arena._request_start()
+	scene.race_arena._set_replay_speed(scene.race_replay.replay_result, 2.0)
+	scene.race_arena._set_replay_speed(scene.race_replay.replay_result, 2.0, true)
+	assert(scene.race_replay.reduced_motion, "降低动态必须切换为分段跳变并关闭跑动抖动，而不只是加速播放。")
+	assert(scene.game.cash == settled_cash and scene.game.tide == settled_tide and scene.game.race_history.size() == settled_history, "重复开始、2倍速和重看只能改变表现，不能重复扣款、重掷或结算。")
+	scene.race_replay.skip()
+	await process_frame
+	assert(scene.race_arena.mode == "finish" and _tree_contains_text(scene.race_arena, "判断与结果") and _tree_contains_text(scene.race_arena, "完整排名"), "冲线后必须在同一页面显示排名、资金和判断复盘，不打开结果弹窗。")
+	scene._open_race_history_from_arena()
+	await process_frame
+	assert(_tree_contains_text(scene.modal_body, "本场") and _tree_contains_text(scene.modal_body, "夺魁"), "赛事历史必须显示玩家票据、盈亏与冠军。")
 	scene.free()
 	var activity_path := "user://saves/activity_race.json"
 	if FileAccess.file_exists(activity_path):

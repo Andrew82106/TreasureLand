@@ -445,7 +445,10 @@ func _market_row(row: Dictionary) -> PanelContainer:
 	var box := VBoxContainer.new()
 	panel.add_child(box)
 	var arrow := "↑" if int(row["change"]) > 0 else ("↓" if int(row["change"]) < 0 else "→")
-	box.add_child(_label("%s　%d金贝 %s　重点需求%d条　库存%d" % [str(row["name"]), int(row["quote"]), arrow, int(row["demand"]), int(row["stock"])], Color("9ee0b4") if int(row["change"]) >= 0 else Color("e1ad9c"), 15))
+	box.add_child(_label("%s　%d金贝 %s　未满足订单%d　可售库存%d　预计到货%d　加工中%d" % [
+		str(row["name"]), int(row["quote"]), arrow, int(row["demand"]), int(row["stock"]),
+		int(row.get("expected_arrivals", 0)), int(row.get("processing", 0))
+	], Color("9ee0b4") if int(row["change"]) >= 0 else Color("e1ad9c"), 15))
 	box.add_child(_label("；".join(row["reasons"]), Color("91abaa"), 13))
 	return panel
 
@@ -489,7 +492,7 @@ func _build_sale_preview() -> Control:
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", 9)
 	panel.add_child(box)
-	box.add_child(_label("出售预览在确认前保持不变；确认后鱼获、金贝、库存和重点需求会一次完成结算。", Color("d6e6e1"), 17))
+	box.add_child(_label("出售预览在确认前保持不变；确认后每条鱼只进入直接订单、可售库存或加工出口之一，并与金贝一次完成结算。", Color("d6e6e1"), 17))
 	var scroll := ScrollContainer.new()
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	box.add_child(scroll)
