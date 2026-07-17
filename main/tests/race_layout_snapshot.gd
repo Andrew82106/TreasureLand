@@ -37,9 +37,13 @@ func _run() -> void:
 		await process_frame
 		assert(_save_snapshot(output_dir.path_join("race_live_%dx%d.png" % [resolution.x, resolution.y])) == OK, "Race live snapshot must be writable.")
 
+	root.size = Vector2i(1280, 720)
+	await process_frame
+	await process_frame
 	scene.race_arena.replay.skip()
 	for resolution in [Vector2i(1280, 720), Vector2i(1600, 900), Vector2i(1920, 1080)]:
 		root.size = resolution
+		await process_frame
 		await process_frame
 		assert(_save_snapshot(output_dir.path_join("race_finish_%dx%d.png" % [resolution.x, resolution.y])) == OK, "Race finish snapshot must be writable.")
 	root.size = Vector2i(1280, 720)

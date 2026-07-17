@@ -183,7 +183,19 @@ func _test_schedule_services_and_residents() -> void:
 	assert(map_entries.any(func(entry): return str(entry.get("id", "")) == "granny"), "默认认识的榕奶奶必须出现在地图人物数据中。")
 	assert(map_entries.any(func(entry): return str(entry.get("id", "")) == "mia"), "正式认识米娅后必须进入地图人物数据。")
 	assert(not map_entries.any(func(entry): return str(entry.get("id", "")) == "old_joe"), "未认识人物不能提前进入地图追踪。")
-	assert(state.environment_resident_entries().size() == NpcCatalogScript.RESIDENTS.size(), "四时段运行数据必须覆盖全部环境居民。")
+	state.port_economy_snapshot["residents"] = 91
+	state.port_economy_snapshot["visitors"] = 27
+	state.port_economy_snapshot["arrivals"] = 3
+	var flow_count_before: int = state.world_economy_flows.size()
+	var transaction_count_before: int = state.fish_market_transactions.size()
+	var resident_entries := state.environment_resident_entries()
+	assert(resident_entries.size() == NpcCatalogScript.RESIDENTS.size(), "四时段运行数据必须覆盖全部环境居民。")
+	var courier: Dictionary = resident_entries.filter(func(entry): return str(entry.get("id", "")) == "resident_courier")[0]
+	assert("常住91人" in str(courier.get("dialogue", "")) and "流动27人" in str(courier.get("dialogue", "")) and "到港3批" in str(courier.get("dialogue", "")), "报信人必须复述当前港口快照中的真实人口与到港数据。")
+	var fisher: Dictionary = resident_entries.filter(func(entry): return str(entry.get("id", "")) == "resident_fisher")[0]
+	var top_fish: Dictionary = state.fish_market_rows()[0]
+	assert(str(top_fish["name"]) in str(fisher.get("dialogue", "")) and ("%d金贝" % int(top_fish["quote"])) in str(fisher.get("dialogue", "")), "环境渔民必须复述当前鱼铺公示，而不是生成独立行情。")
+	assert(state.world_economy_flows.size() == flow_count_before and state.fish_market_transactions.size() == transaction_count_before, "读取背景人物闲谈不得制造成交、流水或价格变化。")
 	var relationship_count: int = state.relationships.size()
 	assert(state.add_npc_memory("resident_fisher", {"summary": "不应写入"}).is_empty(), "环境居民不能写入核心长期记忆。")
 	assert(state.relationships.size() == relationship_count, "环境居民不能生成独立关系线。")

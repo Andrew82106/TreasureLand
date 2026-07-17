@@ -3,6 +3,7 @@ extends Control
 signal closed
 signal race_requested(beast_index: int, ticket_type: String, stake: int, aid_id: String, event_id: String)
 signal history_requested
+signal replay_completed(event_id: String)
 
 const RaceReplayScript = preload("res://scripts/race_replay.gd")
 
@@ -33,6 +34,8 @@ var right_panel: Control
 var decision_panel: Control
 var replay: Control
 var result_label: Label
+var history_button: Button
+var close_button: Button
 
 
 func _ready() -> void:
@@ -55,6 +58,8 @@ func open(game_state) -> void:
 
 
 func close() -> void:
+	if mode == "race":
+		return
 	visible = false
 	closed.emit()
 
@@ -104,8 +109,10 @@ func _rebuild() -> void:
 	top_status = _label("", 17, Color("bfe4dc"))
 	top_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top_row.add_child(top_status)
-	top_row.add_child(_button("赛事历史", history_requested.emit, Vector2(105, 42)))
-	top_row.add_child(_button("返回岛上", close, Vector2(105, 42)))
+	history_button = _button("赛事历史", _request_history, Vector2(105, 42))
+	top_row.add_child(history_button)
+	close_button = _button("返回岛上", close, Vector2(105, 42))
+	top_row.add_child(close_button)
 
 	var body := HBoxContainer.new()
 	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -164,7 +171,15 @@ func _build_pre_state() -> void:
 		public_info.text = "查看赛场不消耗金贝，也不推进潮刻。"
 		_build_disabled_decision()
 		return
-	public_info.text = "%s\n\n票池显示岛民选择，不是系统推荐。点击中央赛兽后，右侧会同步它的优势、风险、近况与预计返还。" % str(event.get("course_note", ""))
+	var public_lines: Array[String] = [str(event.get("course_note", "")), "票池显示岛民选择，不是系统推荐。点击中央赛兽后，右侧会同步它的优势、风险、近况与预计返还。"]
+	var named_tickets: Array = event.get("named_tickets", [])
+	if not named_tickets.is_empty():
+		var ticket_lines: Array[String] = []
+		for raw_ticket in named_tickets.slice(0, mini(3, named_tickets.size())):
+			var ticket: Dictionary = raw_ticket
+			ticket_lines.append("%s：%s%s（%d金贝）" % [str(ticket.get("name", "看台来客")), str(ticket.get("ticket", "独胜")), str(ticket.get("beast_name", "逐风兽")), int(ticket.get("stake", 0))])
+		public_lines.append("看台公开票据\n%s" % "\n".join(ticket_lines))
+	public_info.text = "\n\n".join(public_lines)
 	var arena_title := _label("检录区 · 直接点击八匹逐风兽", 18, Color("f1d687"))
 	arena_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	center_host.add_child(arena_title)
@@ -297,6 +312,12 @@ func _request_start() -> void:
 	race_requested.emit(selected_beast, selected_ticket, int(bet_spin.value), selected_aid, event_id)
 
 
+func _request_history() -> void:
+	if mode == "race":
+		return
+	history_requested.emit()
+
+
 func show_result(result: Dictionary) -> void:
 	if not bool(result.get("ok", false)):
 		start_locked = false
@@ -305,6 +326,8 @@ func show_result(result: Dictionary) -> void:
 		cost_label.text = str(result.get("text", "赛事未能开始。"))
 		return
 	mode = "race"
+	history_button.disabled = true
+	close_button.disabled = true
 	for child in center_host.get_children():
 		center_host.remove_child(child)
 		child.queue_free()
@@ -326,6 +349,7 @@ func show_result(result: Dictionary) -> void:
 	controls.add_child(_button("1倍", _set_replay_speed.bind(result, 1.0, false), Vector2(82, 42)))
 	controls.add_child(_button("2倍", _set_replay_speed.bind(result, 2.0, false), Vector2(82, 42)))
 	controls.add_child(_button("降低动态", _set_replay_speed.bind(result, 2.0, true), Vector2(110, 42)))
+	controls.add_child(_button("重看", replay.replay, Vector2(82, 42)))
 	controls.add_child(_button("跳到冲线", replay.skip, Vector2(120, 42)))
 	result_label = _label("比赛进行中：演出不会改变已经锁定的排名、派彩或时间。", 16, Color("f1d687"))
 	result_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -340,6 +364,9 @@ func _set_replay_speed(result: Dictionary, speed: float, reduced: bool = false) 
 
 func _finish_view(result: Dictionary) -> void:
 	mode = "finish"
+	history_button.disabled = false
+	close_button.disabled = false
+	replay_completed.emit(str(result.get("event_id", event_id)))
 	left_panel.modulate = Color.WHITE
 	right_panel.modulate = Color.WHITE
 	top_status.text = "%s · 冲线复盘 · %s夺魁" % [str(result.get("event_name", "逐风赛事")), str(result.get("results", [{}])[0].get("name", "逐风兽"))]

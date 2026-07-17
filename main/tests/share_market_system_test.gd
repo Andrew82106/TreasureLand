@@ -75,6 +75,8 @@ func _test_market_rules_and_daily_settlement() -> void:
 		assert(abs(float(new_price - old_price) / float(old_price)) <= 0.120001, "单日涨跌不得超过12%。")
 		var report: Dictionary = state.share_company_reports[company_id]
 		assert(report.has("revenue") and report.has("costs") and report.has("profit") and not report.get("drivers", []).is_empty(), "每家公司必须形成可解释经营报告。")
+		for raw_account in state.share_accounts[company_id].values():
+			assert(raw_account.get("bid_orders", []) is Array and raw_account.get("ask_orders", []) is Array, "每个真实持有人账户必须保存当日买单与卖单。")
 
 	var quantity_before_sell := state.share_quantity("bluefin")
 	var sell: Dictionary = state.trade_shares("bluefin", "sell", 3)
@@ -103,12 +105,14 @@ func _test_finite_counterparties_and_cash_dividend() -> void:
 		for account_id in state.share_accounts[company_id].keys():
 			state.share_accounts[company_id][account_id]["locked_today"] = 0
 	var total_before := _whole_market_cash(state)
+	var world_total_before := state.auditable_world_cash_total()
 	state._settle_share_market_day(2)
 	var total_after := _whole_market_cash(state)
 	var business_cash_flow := 0
 	for company_id in state.share_company_ids():
 		business_cash_flow += int(state.share_company_financials[company_id]["last_business_cash_flow"])
 	assert(total_after - total_before == business_cash_flow, "分红只能在公司与持有人之间转移；全市场现金变化必须只等于外部经营现金流。")
+	assert(state.auditable_world_cash_total() == world_total_before, "公司经营、集合竞价与现金分红必须在群体、外岛、公司和持有人账户间严格守恒。")
 	assert(state.share_dividend_history[0].get("lines", []).any(func(line): return int(line.get("company_outflow", 0)) > 0), "充足盈利与准备金条件下必须形成可审计的公司现金分红。")
 
 
@@ -160,6 +164,7 @@ func _test_player_reachable_ui() -> void:
 	scene._open_share_market()
 	await process_frame
 	assert(_tree_contains_text(scene.modal_body, "蓝鳍渔业") and _tree_contains_text(scene.modal_body, "万象行运") and _tree_contains_text(scene.modal_body, "逐风联合会"), "商会页必须同时展示三家产业。")
+	assert(_tree_contains_text(scene.modal_body, "持有人结构") and _tree_contains_text(scene.modal_body, "最近集合成交"), "商会页必须直接显示持有人结构与最近集合竞价成交量。")
 	assert(_tree_contains_text(scene.modal_body, "当日买入次日才可卖出") and _find_button(scene.modal_body, "买1 · 101") != null, "商会页必须直接展示风险提示和可执行交易。")
 	scene._trade_shares("bluefin", "buy", 1)
 	await process_frame

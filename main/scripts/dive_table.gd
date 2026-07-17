@@ -445,8 +445,8 @@ func _market_row(row: Dictionary) -> PanelContainer:
 	var box := VBoxContainer.new()
 	panel.add_child(box)
 	var arrow := "↑" if int(row["change"]) > 0 else ("↓" if int(row["change"]) < 0 else "→")
-	box.add_child(_label("%s　%d金贝 %s　未满足订单%d　可售库存%d　预计到货%d　加工中%d" % [
-		str(row["name"]), int(row["quote"]), arrow, int(row["demand"]), int(row["stock"]),
+	box.add_child(_label("%s　%d金贝 %s　外岛参考%d　未满足订单%d　可售库存%d　预计到货%d　加工中%d" % [
+		str(row["name"]), int(row["quote"]), arrow, int(row.get("external_reference", row["quote"])), int(row["demand"]), int(row["stock"]),
 		int(row.get("expected_arrivals", 0)), int(row.get("processing", 0))
 	], Color("9ee0b4") if int(row["change"]) >= 0 else Color("e1ad9c"), 15))
 	box.add_child(_label("；".join(row["reasons"]), Color("91abaa"), 13))

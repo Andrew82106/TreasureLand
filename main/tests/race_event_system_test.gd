@@ -12,6 +12,7 @@ func _run() -> void:
 	_test_daily_schedule_pool_and_odds()
 	_test_seal_history_time_and_save()
 	_test_aid_does_not_change_event()
+	_test_race_world_cash_funding()
 	await _test_fullscreen_race_arena()
 	print("RACE EVENT SYSTEM TEST PASS")
 	quit(0)
@@ -78,6 +79,20 @@ func _test_seal_history_time_and_save() -> void:
 	var restored = _state()
 	assert(bool(restored.restore_save_data(saved).get("ok", false)), "当前版本赛事状态必须可读取。")
 	assert(restored.race_events == state.race_events and restored.race_history == state.race_history, "读档不能重掷已经锁定的票池、赛果或历史。")
+	var old_time_saved: Dictionary = saved.duplicate(true)
+	for index in range(old_time_saved["state"]["race_events"].size()):
+		var old_event: Dictionary = old_time_saved["state"]["race_events"][index]
+		if bool(old_event.get("completed", false)):
+			var old_summary: Dictionary = old_event.get("result_summary", {})
+			old_summary.erase("time_settled")
+			old_event["result_summary"] = old_summary
+			old_time_saved["state"]["race_events"][index] = old_event
+	for index in range(old_time_saved["state"]["race_history"].size()):
+		old_time_saved["state"]["race_history"][index].erase("time_settled")
+	var old_time_restored = _state()
+	assert(bool(old_time_restored.restore_save_data(old_time_saved).get("ok", false)), "即时走时旧赛事存档必须可迁移。")
+	var migrated_tide: int = int(old_time_restored.tide)
+	assert(not old_time_restored.finalize_race_time(event_id) and old_time_restored.tide == migrated_tide, "旧版已完赛记录必须迁移为已结算时间，不能读档后二次推进。")
 	var legacy = _state()
 	assert(bool(legacy.restore_save_data({
 		"version": 3,
@@ -101,6 +116,19 @@ func _test_aid_does_not_change_event() -> void:
 	assert(aided_result.get("final_pool", {}) == plain_result.get("final_pool", {}), "造物不得改变NPC票池或封盘赔率来源。")
 	assert(aided.cash == plain.cash - 4, "雨势推演只应额外扣除4金贝信息费。")
 	assert(aided.is_discovered("rain"), "部署后永久造物必须继续保留。")
+
+
+func _test_race_world_cash_funding() -> void:
+	var state = _state()
+	state.cash = 50000000
+	var event: Dictionary = state.current_race_event()
+	var simulated: Dictionary = state._simulate_race_event(event, 0)
+	var winning_index := int(simulated.get("results", [])[0].get("index", 0))
+	var total_before := state.auditable_world_cash_total()
+	var result: Dictionary = state.run_race(winning_index, "独胜", 5000, "", str(event["event_id"]))
+	assert(bool(result.get("ok", false)) and bool(result.get("won", false)), "资金压力测试必须选择确定性冠军并命中。")
+	assert(state.auditable_world_cash_total() == total_before, "高财富玩家命中后，票款与派彩仍必须跨账户严格守恒。")
+	assert(int(state.world_external_account.get("cash", 0)) >= 0 and state.world_group_accounts.values().all(func(group): return int(group.get("cash", 0)) >= 0), "赛事组织方、岛内群体与外部账户不得因派彩变成负数。")
 
 
 func _test_race_ui_history_and_replay() -> void:
@@ -147,15 +175,18 @@ func _test_fullscreen_race_arena() -> void:
 	scene.game.free_race_ticket = 0
 	var cash_before_view: int = int(scene.game.cash)
 	var tide_before_view: int = int(scene.game.tide)
+	var world_cash_before_view: int = scene.game.auditable_world_cash_total()
 	scene._open_race()
 	await process_frame
 	assert(scene.race_arena.visible and scene.race_arena.arena_grid != null and scene.race_arena.beast_buttons.size() == 8, "逐风竞速必须使用独立全屏赛场，并把八匹赛兽放在中央直接选择。")
 	assert(_tree_contains_text(scene.race_arena, "晨风试走") and _tree_contains_text(scene.race_arena, "票池显示岛民选择"), "赛前页面必须在中央赛兽周围展示四场日程和公开票池解释。")
+	var public_ticket: Dictionary = scene.race_arena.event.get("named_tickets", [])[0]
+	assert(_tree_contains_text(scene.race_arena, str(public_ticket.get("name", ""))) and _tree_contains_text(scene.race_arena, str(public_ticket.get("beast_name", ""))), "赛场公开消息必须读取本场真实NPC票据，而不是只显示泛化文案。")
 	scene.race_arena._select_beast(4)
 	assert(scene.race_arena.selected_beast == 4 and _tree_contains_text(scene.race_arena.right_panel, "雾步"), "点击中央赛兽后，右侧近况、风险和赔率必须同步同一选择。")
 	assert(scene.game.cash == cash_before_view and scene.game.tide == tide_before_view, "赛前查看、选兽和研读不得提前扣款或推进潮刻。")
 	scene.race_arena.close()
-	assert(scene.game.cash == cash_before_view and scene.game.tide == tide_before_view, "封盘前离开赛场不得扣款、收费或推进时间。")
+	assert(scene.game.cash == cash_before_view and scene.game.tide == tide_before_view and scene.game.auditable_world_cash_total() == world_cash_before_view, "封盘前离开赛场不得扣款、收费、改变世界总账或推进时间。")
 	scene._open_race()
 	scene.race_arena._select_beast(4)
 	scene.race_bet_spin.value = 100
@@ -163,17 +194,23 @@ func _test_fullscreen_race_arena() -> void:
 	await process_frame
 	assert(scene.race_replay != null and scene.race_replay.replay_result.get("stage_reports", []).size() == 4, "正式比赛必须创建可播放的四段动态赛道。")
 	assert(scene.race_arena.mode == "race" and is_equal_approx(scene.race_replay.duration, 28.0), "正式比赛必须在同一全屏页面进入25—35秒实际赛道演出。")
+	assert(scene.game.tide == tide_before_view and scene.race_arena.close_button.disabled and scene.race_arena.history_button.disabled, "正式比赛演出期间必须冻结离场与历史入口，固定潮刻只能在冲线后结算。")
+	scene.race_arena.close()
+	scene.race_arena._request_history()
+	assert(scene.race_arena.visible and not scene.modal_overlay.visible, "比赛进行中不得通过返回、Esc或历史入口中断活动快照。")
 	var settled_cash: int = int(scene.game.cash)
-	var settled_tide: int = int(scene.game.tide)
 	var settled_history: int = scene.game.race_history.size()
 	scene.race_arena._request_start()
 	scene.race_arena._set_replay_speed(scene.race_replay.replay_result, 2.0)
 	scene.race_arena._set_replay_speed(scene.race_replay.replay_result, 2.0, true)
 	assert(scene.race_replay.reduced_motion, "降低动态必须切换为分段跳变并关闭跑动抖动，而不只是加速播放。")
-	assert(scene.game.cash == settled_cash and scene.game.tide == settled_tide and scene.game.race_history.size() == settled_history, "重复开始、2倍速和重看只能改变表现，不能重复扣款、重掷或结算。")
+	assert(scene.game.cash == settled_cash and scene.game.tide == tide_before_view and scene.game.race_history.size() == settled_history, "重复开始、2倍速和重看只能改变表现，不能重复扣款、重掷或提前结算时间。")
 	scene.race_replay.skip()
 	await process_frame
 	assert(scene.race_arena.mode == "finish" and _tree_contains_text(scene.race_arena, "判断与结果") and _tree_contains_text(scene.race_arena, "完整排名"), "冲线后必须在同一页面显示排名、资金和判断复盘，不打开结果弹窗。")
+	assert(scene.game.tide == tide_before_view + 1 and scene.game.auditable_world_cash_total() == world_cash_before_view, "冲线后必须只推进一次固定潮刻，票款和派彩在玩家、赛事组织者与外部账户间严格守恒。")
+	var completed_tide := int(scene.game.tide)
+	assert(not scene.game.finalize_race_time(str(scene.race_arena.event_id)) and scene.game.tide == completed_tide, "重复完成信号不得再次推进潮刻或重复记录财富。")
 	scene._open_race_history_from_arena()
 	await process_frame
 	assert(_tree_contains_text(scene.modal_body, "本场") and _tree_contains_text(scene.modal_body, "夺魁"), "赛事历史必须显示玩家票据、盈亏与冠军。")

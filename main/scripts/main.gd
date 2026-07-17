@@ -35,6 +35,7 @@ var marker_by_id := {}
 var npc_visual_by_id := {}
 var resident_visual_by_id := {}
 var resident_visuals_root: Node2D
+var port_activity_root: Node2D
 var nearest_marker: Node2D
 var discovered_areas := {"漂流湾": true}
 var current_area := "漂流湾"
@@ -89,6 +90,7 @@ func _ready() -> void:
 	_build_world_collisions()
 	_build_markers()
 	_build_npc_visuals()
+	_build_port_activity_visuals()
 	_apply_npc_schedule()
 	_build_ui()
 	initial_player_position = player.global_position
@@ -132,9 +134,10 @@ func _process(delta: float) -> void:
 		return
 	var dive_activity_open: bool = dive_table != null and dive_table.visible and dive_table.mode == "dive"
 	var dive_interface_open: bool = dive_table != null and dive_table.visible and dive_table.mode != "dive"
-	var formal_activity_open: bool = (synthesis_table != null and synthesis_table.visible) or (poker_table != null and poker_table.visible) or dive_activity_open
+	var race_activity_open: bool = race_arena != null and race_arena.visible and race_arena.mode == "race"
+	var formal_activity_open: bool = (synthesis_table != null and synthesis_table.visible) or (poker_table != null and poker_table.visible) or dive_activity_open or race_activity_open
 	game.set_time_pause("formal_activity", formal_activity_open, game.TIME_STATE_ACTIVITY)
-	var race_interface_open: bool = race_arena != null and race_arena.visible
+	var race_interface_open: bool = race_arena != null and race_arena.visible and not race_activity_open
 	game.set_time_pause("interface", (modal_overlay != null and modal_overlay.visible) or dive_interface_open or race_interface_open, game.TIME_STATE_UI)
 	if game.advance_world_delta(delta):
 		clock_hud_elapsed += delta
@@ -256,6 +259,57 @@ func _build_npc_visuals() -> void:
 		resident_visual_by_id[resident_id] = holder
 
 
+func _build_port_activity_visuals() -> void:
+	port_activity_root = Node2D.new()
+	port_activity_root.name = "PortEconomyVisuals"
+	add_child(port_activity_root)
+
+
+func _apply_port_activity_visuals() -> void:
+	if port_activity_root == null:
+		return
+	for child in port_activity_root.get_children():
+		port_activity_root.remove_child(child)
+		child.queue_free()
+	var port: Dictionary = game.port_economy_snapshot
+	var arrivals := clampi(int(port.get("arrivals", 1)), 1, 4)
+	var visitors := clampi(int(port.get("visitors", 10)), 10, 60)
+	var cargo_count := clampi(arrivals * 2 + int(round(float(visitors) / 20.0)), 3, 11)
+	var crowd_count := clampi(int(ceil(float(visitors) / 8.0)), 2, 8)
+	var race_crowd_count := clampi(int(ceil(float(visitors) / 15.0)), 1, 4)
+	var ship_positions := [Vector2(355, 845), Vector2(520, 865), Vector2(2290, 860), Vector2(2395, 875)]
+	for index in range(arrivals):
+		port_activity_root.add_child(_world_activity_symbol("Ship%02d" % index, ship_positions[index], "ship", Color("80d1dc"), arrivals))
+	for index in range(cargo_count):
+		var position := Vector2(1515 + (index % 6) * 32, 835 + int(index / 6) * 30)
+		port_activity_root.add_child(_world_activity_symbol("Cargo%02d" % index, position, "cargo", Color("d4a15f"), cargo_count))
+	for index in range(crowd_count):
+		var position := Vector2(1690 + (index % 4) * 55, 805 + int(index / 4) * 48)
+		port_activity_root.add_child(_world_activity_symbol("Crowd%02d" % index, position, "crowd", Color("8fc9b5"), visitors))
+	for index in range(race_crowd_count):
+		var position := Vector2(2435 + index * 48, 760 + (index % 2) * 34)
+		port_activity_root.add_child(_world_activity_symbol("RaceCrowd%02d" % index, position, "race_crowd", Color("e0c273"), visitors))
+
+
+func _world_activity_symbol(node_name: String, position_value: Vector2, kind: String, color: Color, source_value: int) -> Node2D:
+	var holder := Node2D.new()
+	holder.name = node_name
+	holder.position = position_value
+	holder.set_meta("economy_kind", kind)
+	holder.set_meta("source_value", source_value)
+	holder.set_meta("snapshot_day", int(game.port_economy_snapshot.get("day", game.day)))
+	var shape := Polygon2D.new()
+	if kind == "ship":
+		shape.polygon = PackedVector2Array([Vector2(-22, 5), Vector2(22, 5), Vector2(14, 15), Vector2(-14, 15), Vector2(0, -14)])
+	elif kind == "cargo":
+		shape.polygon = PackedVector2Array([Vector2(-10, -9), Vector2(10, -9), Vector2(10, 9), Vector2(-10, 9)])
+	else:
+		shape.polygon = PackedVector2Array([Vector2(0, -12), Vector2(8, -2), Vector2(6, 12), Vector2(-6, 12), Vector2(-8, -2)])
+	shape.color = color
+	holder.add_child(shape)
+	return holder
+
+
 func _on_time_boundary(kind: String, _data: Dictionary) -> void:
 	if kind in ["phase", "day_end"]:
 		_apply_npc_schedule()
@@ -292,6 +346,7 @@ func _apply_npc_schedule() -> void:
 		if visual != null:
 			visual.position = entry.get("position", visual.position) + Vector2(-20, 22)
 			visual.visible = available
+	_apply_port_activity_visuals()
 
 
 func _build_world_collisions() -> void:
@@ -482,6 +537,7 @@ func _build_ui() -> void:
 	race_arena.closed.connect(_on_race_arena_closed)
 	race_arena.race_requested.connect(_run_race_from_arena)
 	race_arena.history_requested.connect(_open_race_history_from_arena)
+	race_arena.replay_completed.connect(_on_race_replay_completed)
 	ui_root.add_child(race_arena)
 
 
@@ -820,7 +876,12 @@ func _interact() -> void:
 		"tea": _open_poker()
 		"news": _open_news()
 		"tower": _open_tower()
-		"race": _open_race()
+		"race", "race_ticket", "race_stand": _open_race()
+		"road_sign": _open_road_sign()
+		"lifestyle": _open_lifestyle_display()
+		"square": _open_public_square()
+		"stable": _open_stable()
+		"vip_terrace": _open_vip_terrace()
 		_:
 			if str(nearest_marker.interaction_id).begins_with("resident_"):
 				_open_resident(nearest_marker.interaction_id)
@@ -838,6 +899,52 @@ func _open_modal(title_value: String) -> void:
 func _close_modal() -> void:
 	modal_overlay.visible = false
 	player.controls_enabled = true
+
+
+func _open_road_sign() -> void:
+	_open_modal("海边路牌")
+	modal_body.add_child(_make_text("← 漂流湾：小屋、潜捕点、造化盆\n→ 椰影街：研究商店、鱼铺、牌会、晨报与商会\n继续向东：逐风海岸的赛事大厅、公共看台和马厩", Color("d9eee5")))
+	modal_body.add_child(_make_text("风铃港、金潮坡与云顶区目前只在远景中可见，首版尚未开放通行。", Color("a8bfbd")))
+
+
+func _open_lifestyle_display() -> void:
+	_open_modal("生活陈列店")
+	modal_body.add_child(_make_text("这里展示岛民的居所用品与生活目标，首版不售卖衣服，也不把永久万物改成普通商品。", Color("d9eee5")))
+	modal_body.add_child(_make_text("你的居所：%s。家具自由摆放与更多生活商品属于后续内容；当前长期消费统一在漂流小屋完成。" % str(game.home_data().get("name", "漂流小屋")), Color("b7d3cf")))
+	modal_body.add_child(_make_button("查看漂流小屋目标", _open_home))
+
+
+func _open_public_square() -> void:
+	_open_modal("椰影街 · 公共广场")
+	var port: Dictionary = game.port_economy_snapshot
+	modal_body.add_child(_make_text("今日公共记录：常住%d人 · 流动%d人 · 到港%d批 · %s。" % [int(port.get("residents", 0)), int(port.get("visitors", 0)), int(port.get("arrivals", 0)), game.phase_name()], Color("d9eee5")))
+	modal_body.add_child(_make_text("广场人物、鱼铺队伍、货箱与临时摊位都读取这份港口快照；停留查看不会制造额外成交。", Color("a8c6c2")))
+	for raw_entry in game.environment_resident_entries().slice(0, 3):
+		var entry: Dictionary = raw_entry
+		modal_body.add_child(_make_text("%s · %s：%s" % [str(entry.get("name", "岛民")), str(entry.get("role", "来客")), str(entry.get("dialogue", ""))], Color("b9d8d1")))
+
+
+func _open_stable() -> void:
+	_open_modal("马厩与骑师区")
+	var race_event: Dictionary = game.current_race_event()
+	if race_event.is_empty():
+		race_event = game.next_race_event()
+	if race_event.is_empty():
+		modal_body.add_child(_make_text("今日赛事已经全部结束。马厩保留公共参观区，新的阵容会在次日清晨登记。", Color("b8d1cd")))
+	else:
+		modal_body.add_child(_make_text("%s · 第%d潮刻 · %s / %s" % [str(race_event.get("name", "逐风赛事")), int(race_event.get("scheduled_tide", 0)), str(race_event.get("weather", game.weather)), str(race_event.get("wind", game.wind_direction))], Color("f0d27e")))
+		var roster_lines: Array[String] = []
+		for raw_roster in race_event.get("roster", []).slice(0, 4):
+			var roster: Dictionary = raw_roster
+			roster_lines.append("%s：%s" % [str(roster.get("name", "逐风兽")), str(roster.get("condition", "状态平稳"))])
+		modal_body.add_child(_make_text("公开检录\n%s" % "\n".join(roster_lines), Color("b9d8d1")))
+	modal_body.add_child(_make_button("前往逐风赛场", _open_race))
+
+
+func _open_vip_terrace() -> void:
+	_open_modal("贵宾露台入口")
+	modal_body.add_child(_make_text("露台在首版保持锁定，只用于展示未来的高阶岛屿生活；公共看台、赛事大厅和马厩不受财富限制。", Color("f0d27e")))
+	modal_body.add_child(_make_text("当前账户财富%d金贝。此入口不会出售未设计商品，也不会提前扣款。" % game.account_wealth(), Color("b8d1cd")))
 
 
 func _show_toast(text_value: String) -> void:
@@ -2308,10 +2415,15 @@ func _open_share_market(message: String = "") -> void:
 		box.add_child(heading)
 		box.add_child(_make_text(str(row["description"]), Color("a9c6c3")))
 		var financials: Dictionary = row.get("financials", {})
-		box.add_child(_make_text("总发行1,000份 · 校验%d · 玩家%d · 商会库存%d · 买方深度%d · 卖方深度%d" % [
+		box.add_child(_make_text("总发行1,000份 · 校验%d · 玩家%d · 商会库存%d · 买方深度%d · 卖方深度%d · 最近集合成交%d" % [
 			int(row.get("issued_total_check", 0)), int(row.get("quantity", 0)), int(row.get("company_inventory", 0)),
-			int(row.get("bid_depth", 0)), int(row.get("ask_depth", 0))
+			int(row.get("bid_depth", 0)), int(row.get("ask_depth", 0)), int(row.get("last_volume", 0))
 		], Color("9edfc4")))
+		var holder_lines: Array[String] = []
+		for raw_holder in row.get("holders", []):
+			var holder: Dictionary = raw_holder
+			holder_lines.append("%s%d" % [str(holder.get("name", "持有人")), int(holder.get("quantity", 0))])
+		box.add_child(_make_text("持有人结构：%s" % " · ".join(holder_lines), Color("91b9b6")))
 		box.add_child(_make_text("公司现金%d · 资产%d · 债务%d · 留存%+d · 分红准备%d · 基本价值约%.1f" % [
 			int(financials.get("company_cash", 0)), int(financials.get("productive_assets", 0)), int(financials.get("debt", 0)),
 			int(financials.get("retained_earnings", 0)), int(financials.get("dividend_reserve", 0)), float(row.get("fundamental_value", row["price"]))
@@ -2790,10 +2902,14 @@ func _run_race() -> void:
 
 func _run_race_from_arena(beast_index: int, ticket_type: String, stake: int, aid_id: String, event_id: String) -> void:
 	game.save_game("user://saves/activity_race.json", _world_save_state(), true)
-	var result: Dictionary = game.run_race(beast_index, ticket_type, stake, aid_id, event_id)
+	var result: Dictionary = game.run_race(beast_index, ticket_type, stake, aid_id, event_id, true)
 	race_arena.show_result(result)
 	if bool(result.get("ok", false)):
 		race_replay = race_arena.replay
+
+
+func _on_race_replay_completed(event_id: String) -> void:
+	game.finalize_race_time(event_id)
 	_refresh_hud()
 
 

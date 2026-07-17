@@ -74,6 +74,7 @@ func _test_market_refresh_and_atomic_sale() -> void:
 		var old_quote := int(quotes_before[species_id])
 		var new_quote := int(first.fish_market_quotes[species_id])
 		assert(new_quote >= int(floor(old_quote * 0.90)) and new_quote <= int(ceil(old_quote * 1.10)), "单时段鱼价变化必须限制在±10%。")
+	assert(first.fish_market_rows().all(func(row): return int(row.get("external_reference", 0)) > 0), "鱼铺公开行情必须逐鱼种显示外岛参考价。")
 
 	var state := _state()
 	var species_id := "bubble_sardine"
@@ -95,8 +96,13 @@ func _test_market_refresh_and_atomic_sale() -> void:
 	assert(tiers.count("直接订单") == 2 and tiers.count("可售库存85%") == 2 and tiers.count("加工出口60%") == 4, "每条鱼必须依次进入直接订单、可售库存或加工出口的唯一业务路径。")
 	assert(int(preview["total"]) == 94, "分档售价必须同时应用报价、尺寸和新鲜度并准确汇总。")
 	var cash_before := state.cash
+	var company_cash_before := int(state.share_company_financials["bluefin"]["company_cash"])
+	var world_cash_before := state.auditable_world_cash_total()
 	var settled := state.confirm_fish_sale(str(preview["sale_id"]))
 	assert(bool(settled.get("ok", false)) and state.cash == cash_before + 94, "确认出售必须原子增加预览中的金贝。")
+	assert(int(state.share_company_financials["bluefin"]["company_cash"]) == company_cash_before - 94, "蓝鳍公司现金应从%d降至%d，实际为%d。" % [company_cash_before, company_cash_before - 94, int(state.share_company_financials["bluefin"]["company_cash"])])
+	assert(state.auditable_world_cash_total() == world_cash_before, "玩家出售鱼获必须跨账户守恒；结算前%d，结算后%d。" % [world_cash_before, state.auditable_world_cash_total()])
+	assert(state.world_economy_flows.any(func(flow): return str(flow.get("source", "")) == "company:bluefin" and str(flow.get("target", "")) == "player" and int(flow.get("amount", 0)) == 94), "蓝鳍采购必须形成带公司对手方的世界经济流水。")
 	assert(state.fish_catch_inventory.is_empty() and int(state.fish_market_stock[species_id]) == 7 and int(state.fish_market_demand[species_id]) == 0 and int(state.fish_market_processing[species_id]) == 4, "出售后两条鱼只完成订单、两条只进入库存、四条只进入加工，不得双重记账。")
 	var transaction: Dictionary = state.fish_market_transactions[-1]
 	assert(int(transaction["routes"]["direct_order"]) + int(transaction["routes"]["inventory"]) + int(transaction["routes"]["processing"]) == 8, "唯一业务路由数量之和必须等于实际移除鱼获数。")
@@ -104,6 +110,11 @@ func _test_market_refresh_and_atomic_sale() -> void:
 	var duplicate_cash := state.cash
 	var duplicate := state.confirm_fish_sale(str(preview["sale_id"]))
 	assert(not bool(duplicate.get("ok", true)) and bool(duplicate.get("duplicate", false)) and state.cash == duplicate_cash, "同一成交编号最多只能结算一次。")
+	state.fish_catch_inventory.append(_catch("insufficient_company_cash", species_id, "标准", state.day))
+	var blocked_preview := state.create_fish_sale_preview(["insufficient_company_cash"])
+	state.share_company_financials["bluefin"]["company_cash"] = 0
+	var blocked := state.confirm_fish_sale(str(blocked_preview["sale_id"]))
+	assert(not bool(blocked.get("ok", true)) and state.fish_catch_inventory.size() == 1 and state.cash == duplicate_cash, "公司现金不足时必须整笔拒绝，保留玩家鱼获与现金。")
 
 
 func _test_freshness_orders_and_save_state() -> void:
@@ -121,8 +132,12 @@ func _test_freshness_orders_and_save_state() -> void:
 	for index in range(int(order["quantity"])):
 		order_state.fish_catch_inventory.append(_catch("order_%d" % index, str(order["species_id"]), "标准", order_state.day))
 	var order_cash := order_state.cash
+	var payer_id := "fishers" if str(order.get("role", "")).contains("渔民") else ("hospitality" if str(order.get("role", "")).contains("厨师") else "visitors")
+	var payer_cash := int(order_state.world_group_accounts[payer_id]["cash"])
+	var order_world_cash := order_state.auditable_world_cash_total()
 	var delivered := order_state.turn_in_fish_order(str(order["order_id"]))
 	assert(bool(delivered.get("ok", false)) and order_state.cash == order_cash + int(delivered["reward"]), "订单必须原子移除合格鱼获并发放锁定奖励。")
+	assert(int(order_state.world_group_accounts[payer_id]["cash"]) == payer_cash - int(delivered["reward"]) and order_state.auditable_world_cash_total() == order_world_cash, "人物订单奖励必须由对应群体账户支付，并保持世界现金守恒。")
 	assert(not bool(order_state.turn_in_fish_order(str(order["order_id"])).get("ok", true)), "已完成订单不得重复交付。")
 
 	var save_state := _state()

@@ -739,6 +739,7 @@ func restore_save_data(data: Dictionary) -> Dictionary:
 	world_group_accounts = saved.get("world_group_accounts", {}).duplicate(true)
 	world_external_account = saved.get("world_external_account", {"cash": 240000, "inflow": 0, "outflow": 0}).duplicate(true)
 	world_economy_flows = saved.get("world_economy_flows", []).duplicate(true)
+	_repair_world_economy_flows()
 	port_economy_snapshot = saved.get("port_economy_snapshot", {}).duplicate(true)
 	home_level = clampi(int(saved.get("home_level", 0)), 0, HomeCatalog.max_level())
 	home_display_items.clear()
@@ -807,6 +808,7 @@ func restore_save_data(data: Dictionary) -> Dictionary:
 		_generate_daily_schedule()
 	if race_events.is_empty() or int(race_events[0].get("day", 0)) != day:
 		_initialize_race_day()
+	_repair_race_time_settlement()
 	if poker_invitations.is_empty() or int(poker_invitations[0].get("day", 0)) != day:
 		_initialize_poker_invitations()
 	if fish_market_quotes.is_empty():
@@ -847,6 +849,25 @@ func item_name(item_id: String) -> String:
 
 func account_wealth() -> int:
 	return cash + locked_principal + share_reserved_cash
+
+
+func auditable_world_cash_total() -> int:
+	# 统一经济闭环中的现金总量。库存、鱼获与份契属于资产，不在这里重复折算。
+	var total := account_wealth() + share_market_maintenance_cash
+	total += int(world_external_account.get("cash", 0))
+	for raw_group in world_group_accounts.values():
+		if raw_group is Dictionary:
+			total += int(raw_group.get("cash", 0))
+	for raw_accounts in share_accounts.values():
+		if not raw_accounts is Dictionary:
+			continue
+		for raw_account in raw_accounts.values():
+			if raw_account is Dictionary:
+				total += int(raw_account.get("cash", 0))
+	for raw_financials in share_company_financials.values():
+		if raw_financials is Dictionary:
+			total += int(raw_financials.get("company_cash", 0))
+	return total
 
 
 func asset_liquidation_value() -> int:
@@ -1769,15 +1790,87 @@ func _settle_world_group_economy(closing_day: int) -> void:
 	world_external_account["outflow"] = int(world_external_account.get("outflow", 0)) + actual_inflow
 	var hospitality: Dictionary = world_group_accounts["hospitality"]
 	var merchants: Dictionary = world_group_accounts["port_merchants"]
-	hospitality["cash"] = int(hospitality["cash"]) + int(round(actual_inflow * 0.42))
-	merchants["cash"] = int(merchants["cash"]) + actual_inflow - int(round(actual_inflow * 0.42)) - import_outflow
+	var hospitality_inflow := int(round(actual_inflow * 0.42))
+	var merchant_inflow := actual_inflow - hospitality_inflow
+	hospitality["cash"] = int(hospitality["cash"]) + hospitality_inflow
+	hospitality["net_flow"] = int(hospitality.get("net_flow", 0)) + hospitality_inflow
+	merchants["cash"] = int(merchants["cash"]) + merchant_inflow - import_outflow
+	merchants["net_flow"] = int(merchants.get("net_flow", 0)) + merchant_inflow - import_outflow
 	world_group_accounts["hospitality"] = hospitality
 	world_group_accounts["port_merchants"] = merchants
-	world_economy_flows.append({"day": closing_day, "source": "external_islands", "target": "island_groups", "tag": "游客与出口流入", "amount": actual_inflow})
-	world_economy_flows.append({"day": closing_day, "source": "island_groups", "target": "external_islands", "tag": "进口、维护与航运流出", "amount": import_outflow})
+	_append_world_economy_flow("external_islands", "hospitality", "游客消费流入", hospitality_inflow, "tourism", "inflow", {}, visitors, 0, "餐饮与旅店")
+	_append_world_economy_flow("external_islands", "port_merchants", "出口与到港流入", merchant_inflow, "shipping", "inflow", {}, arrivals, 0, "港商与航运")
+	_append_world_economy_flow("port_merchants", "external_islands", "进口、维护与航运流出", import_outflow, "shipping", "outflow", {}, arrivals, 0, "外部群岛")
+	_transfer_world_group_cash("residents", "hospitality", int(port_economy_snapshot.get("residents", 80)) * 6, "居民日常餐饮", "local_consumption")
+	_transfer_world_group_cash("processors", "fishers", 900 + arrivals * 180, "加工者采购鱼获", "fish_supply", {"fish_batches": arrivals}, arrivals)
+	_transfer_world_group_cash("visitors", "race_organizers", visitors * 12, "游客赛事与摊位消费", "race_services")
+	port_economy_snapshot["settled_day"] = closing_day
+
+
+func _repair_world_economy_flows() -> void:
+	var repaired: Array = []
+	for index in range(world_economy_flows.size()):
+		var raw_flow = world_economy_flows[index]
+		if not raw_flow is Dictionary:
+			continue
+		var flow: Dictionary = raw_flow.duplicate(true)
+		var source := str(flow.get("source", "unknown"))
+		var target := str(flow.get("target", "unknown"))
+		flow["flow_id"] = str(flow.get("flow_id", "legacy-world-d%03d-%04d" % [int(flow.get("day", day)), index + 1]))
+		flow["day"] = maxi(1, int(flow.get("day", day)))
+		flow["tide"] = clampi(int(flow.get("tide", 1)), 1, 16)
+		flow["source"] = source
+		flow["target"] = target
+		flow["counterparty"] = str(flow.get("counterparty", target))
+		flow["tag"] = str(flow.get("tag", "旧版世界经济流水"))
+		flow["sector"] = str(flow.get("sector", "world_economy"))
+		var external_direction := str(flow.get("external_flow", "none"))
+		if not external_direction in ["inflow", "outflow", "none"]:
+			external_direction = "none"
+		if external_direction == "none" and source == "external_islands":
+			external_direction = "inflow"
+		elif external_direction == "none" and target == "external_islands":
+			external_direction = "outflow"
+		flow["external_flow"] = external_direction
+		flow["amount"] = maxi(0, int(flow.get("amount", 0)))
+		flow["inventory_delta"] = flow.get("inventory_delta", {}).duplicate(true) if flow.get("inventory_delta", {}) is Dictionary else {}
+		flow["order_fulfilled"] = maxi(0, int(flow.get("order_fulfilled", 0)))
+		flow["company_cash_delta"] = int(flow.get("company_cash_delta", 0))
+		repaired.append(flow)
+	world_economy_flows = repaired
+
+
+func _append_world_economy_flow(source: String, target: String, tag: String, amount: int, sector: String, external_flow: String = "none", inventory_delta: Dictionary = {}, order_fulfilled: int = 0, company_cash_delta: int = 0, counterparty: String = "") -> void:
+	if amount <= 0:
+		return
+	world_economy_flows.append({
+		"flow_id": "world-d%03d-t%02d-%04d" % [day, tide, world_economy_flows.size() + 1],
+		"day": day, "tide": tide, "source": source, "target": target,
+		"counterparty": counterparty if not counterparty.is_empty() else target,
+		"tag": tag, "sector": sector, "external_flow": external_flow,
+		"amount": amount, "inventory_delta": inventory_delta.duplicate(true),
+		"order_fulfilled": order_fulfilled, "company_cash_delta": company_cash_delta
+	})
 	while world_economy_flows.size() > 128:
 		world_economy_flows.pop_front()
-	port_economy_snapshot["settled_day"] = closing_day
+
+
+func _transfer_world_group_cash(source_id: String, target_id: String, requested_amount: int, tag: String, sector: String, inventory_delta: Dictionary = {}, order_fulfilled: int = 0) -> int:
+	if not world_group_accounts.has(source_id) or not world_group_accounts.has(target_id):
+		return 0
+	var source: Dictionary = world_group_accounts[source_id]
+	var target: Dictionary = world_group_accounts[target_id]
+	var amount := mini(maxi(0, requested_amount), maxi(0, int(source.get("cash", 0))))
+	if amount <= 0:
+		return 0
+	source["cash"] = int(source.get("cash", 0)) - amount
+	source["net_flow"] = int(source.get("net_flow", 0)) - amount
+	target["cash"] = int(target.get("cash", 0)) + amount
+	target["net_flow"] = int(target.get("net_flow", 0)) + amount
+	world_group_accounts[source_id] = source
+	world_group_accounts[target_id] = target
+	_append_world_economy_flow(source_id, target_id, tag, amount, sector, "none", inventory_delta, order_fulfilled, 0, str(target.get("name", target_id)))
+	return amount
 
 
 func _initialize_npc_state() -> void:
@@ -1924,13 +2017,45 @@ func environment_resident_entries() -> Array:
 			"name": str(profile.get("name", resident_id)),
 			"role": str(profile.get("role", "岛民")),
 			"color": Color(str(profile.get("color", "9bb8b8"))),
-			"dialogue": str(profile.get("dialogue", "")),
+			"dialogue": _environment_resident_dialogue(resident_id, str(profile.get("dialogue", ""))),
 			"area": str(schedule.get("area", "")),
 			"location": str(schedule.get("location", "")),
 			"position": schedule.get("position", Vector2.ZERO),
 			"available": bool(schedule.get("available", true))
 		})
 	return result
+
+
+func _environment_resident_dialogue(resident_id: String, fallback: String) -> String:
+	var port: Dictionary = port_economy_snapshot
+	match resident_id:
+		"resident_fisher":
+			var rows := fish_market_rows()
+			if not rows.is_empty():
+				var row: Dictionary = rows[0]
+				return "“鱼铺公示写着：%s%d金贝，未满足订单%d，预计到货%d。我只复述这张公示。”" % [str(row["name"]), int(row["quote"]), int(row["demand"]), int(row.get("expected_arrivals", 0))]
+		"resident_chef":
+			var restaurant: Dictionary = fish_market_cohort_accounts.get("restaurants", {})
+			for raw_order in restaurant.get("orders", []):
+				if raw_order is Dictionary and int(raw_order.get("remaining", 0)) > 0:
+					return "“餐饮订单还缺%d条%s，最高价%d金贝；这是后厨今天仍在执行的单子。”" % [int(raw_order["remaining"]), FishCatalog.species_name(str(raw_order["species_id"])), int(raw_order.get("max_price", 0))]
+		"resident_collector":
+			return "“海生图鉴目前登记%d种，鱼获箱还有%d条可核对实例；我只认这些留有记录的数字。”" % [marine_discoveries.size(), fish_catch_inventory.size()]
+		"resident_stablehand":
+			var race_event := current_race_event()
+			if race_event.is_empty():
+				race_event = next_race_event()
+			if not race_event.is_empty() and not race_event.get("roster", []).is_empty():
+				var roster: Dictionary = race_event["roster"][0]
+				return "“赛事厅公示：%s将在第%d潮刻鸣钟，%s目前是%s。这不是胜负保证。”" % [str(race_event.get("name", "逐风赛事")), int(race_event.get("scheduled_tide", 0)), str(roster.get("name", "逐风兽")), str(roster.get("condition", "状态平稳"))]
+		"resident_teaguest":
+			var summary := latest_poker_session_summary()
+			if not summary.is_empty():
+				return "“茶摊账上最近一场共打%d手，玩家本场%+d金贝；我说的是公开结算，不是下一局消息。”" % [int(summary.get("hands_played", 0)), int(summary.get("net_cash", 0))]
+			return "“今天茶摊还没有公开牌会结算；没有记录的输赢，我就不拿来当消息。”"
+		"resident_courier":
+			return "“晨报登记：常住%d人、流动%d人、到港%d批；报栏、鱼铺和赛事厅读的都是这一份公开记录。”" % [int(port.get("residents", 0)), int(port.get("visitors", 0)), int(port.get("arrivals", 0))]
+	return fallback
 
 
 func _initialize_discovery_records() -> void:
@@ -3024,7 +3149,8 @@ func _ensure_fish_market_economy() -> void:
 			"port_merchants": {"name": "港商与航运", "cash": 140000, "inventory": {}, "net_flow": 0},
 			"race_organizers": {"name": "赛事组织者", "cash": 124000, "inventory": {}, "net_flow": 0}
 		}
-	_update_port_economy_snapshot()
+	if port_economy_snapshot.is_empty() or int(port_economy_snapshot.get("day", 0)) != day:
+		_update_port_economy_snapshot()
 
 
 func _update_port_economy_snapshot() -> void:
@@ -3268,6 +3394,7 @@ func fish_market_rows() -> Array:
 			"stock": int(fish_market_stock.get(species_id, 0)),
 			"demand": int(fish_market_demand.get(species_id, 0)),
 			"expected_arrivals": int(fish_market_expected_arrivals.get(species_id, 0)),
+			"external_reference": int(fish_market_external_reference.get(species_id, FISH_SPECIES[species_id]["base_value"])),
 			"processing": int(fish_market_processing.get(species_id, 0)),
 			"reasons": fish_market_reasons.get(species_id, []).duplicate()
 		})
@@ -3336,6 +3463,13 @@ func confirm_fish_sale(sale_id: String) -> Dictionary:
 	if not pending_fish_sales.has(sale_id):
 		return {"ok": false, "text": "出售预览已经失效，请重新确认当前报价。"}
 	var preview: Dictionary = pending_fish_sales[sale_id]
+	var total := int(preview["total"])
+	_ensure_fish_market_economy()
+	if not share_company_financials.has("bluefin"):
+		_initialize_share_company_economy("bluefin", int(share_quotes.get("bluefin", SHARE_COMPANIES["bluefin"]["base_price"])))
+	var bluefin_financials: Dictionary = share_company_financials["bluefin"]
+	if int(bluefin_financials.get("company_cash", 0)) < total:
+		return {"ok": false, "text": "蓝鳍鱼铺今日采购金不足，未移除鱼获；请等待下一日经营结算。"}
 	var inventory_by_id := {}
 	for raw_catch in fish_catch_inventory:
 		var catch_record: Dictionary = raw_catch
@@ -3354,7 +3488,7 @@ func confirm_fish_sale(sale_id: String) -> Dictionary:
 		route_counts[route] = int(route_counts.get(route, 0)) + 1
 		if route == "direct_order":
 			var matched := _consume_fish_cohort_order(species_id, 1)
-			_append_fish_actual_sale(species_id, 1, "player_direct_order", int(line["unit_price"]), int(round(float(line["unit_price"]) * 1.18)), ",".join(matched["buyers"]))
+			_append_fish_actual_sale(species_id, 1, "player_direct_order", 0, int(round(float(line["unit_price"]) * 1.18)), ",".join(matched["buyers"]))
 		elif route == "inventory":
 			fish_market_stock[species_id] = int(fish_market_stock.get(species_id, 0)) + 1
 		else:
@@ -3364,8 +3498,10 @@ func confirm_fish_sale(sale_id: String) -> Dictionary:
 		if not sold_ids.has(str(raw_catch.get("catch_id", ""))):
 			retained.append(raw_catch)
 	fish_catch_inventory = retained
-	var total := int(preview["total"])
+	bluefin_financials["company_cash"] = int(bluefin_financials.get("company_cash", 0)) - total
+	share_company_financials["bluefin"] = bluefin_financials
 	cash += total
+	_append_world_economy_flow("company:bluefin", "player", "蓝鳍鱼铺采购玩家鱼获", total, "fish_market", "none", route_counts, int(route_counts.get("direct_order", 0)), -total, "玩家")
 	processed_fish_sales[sale_id] = true
 	pending_fish_sales.erase(sale_id)
 	var transaction := {
@@ -3414,6 +3550,12 @@ func turn_in_fish_order(order_id: String) -> Dictionary:
 		if not str(order.get("freshness_required", "")).is_empty():
 			conditions.append("%s以上" % str(order["freshness_required"]))
 		return {"ok": false, "text": "需要%d条%s%s；当前合格%d条。" % [int(order["quantity"]), FishCatalog.species_name(str(order["species_id"])), "（%s）" % "、".join(conditions) if not conditions.is_empty() else "", qualifying.size()]}
+	var reward := int(order["quantity"]) * int(order["reward_each"])
+	_ensure_fish_market_economy()
+	var payer_id := "fishers" if str(order.get("role", "")).contains("渔民") else ("hospitality" if str(order.get("role", "")).contains("厨师") else "visitors")
+	var payer: Dictionary = world_group_accounts.get(payer_id, {})
+	if int(payer.get("cash", 0)) < reward:
+		return {"ok": false, "text": "%s的订单预算暂时不足，鱼获仍保留在鱼获箱。" % str(order.get("buyer", "委托人"))}
 	qualifying.sort_custom(func(a, b): return int(a["caught_day"]) < int(b["caught_day"]))
 	var used := {}
 	for index in range(int(order["quantity"])):
@@ -3423,8 +3565,11 @@ func turn_in_fish_order(order_id: String) -> Dictionary:
 		if not used.has(str(raw_catch.get("catch_id", ""))):
 			retained.append(raw_catch)
 	fish_catch_inventory = retained
-	var reward := int(order["quantity"]) * int(order["reward_each"])
+	payer["cash"] = int(payer.get("cash", 0)) - reward
+	payer["net_flow"] = int(payer.get("net_flow", 0)) - reward
+	world_group_accounts[payer_id] = payer
 	cash += reward
+	_append_world_economy_flow(payer_id, "player", "具名人物鱼获订单", reward, "fish_order", "none", {str(order["species_id"]): -int(order["quantity"])}, int(order["quantity"]), 0, str(order["buyer"]))
 	_append_fish_actual_sale(str(order["species_id"]), int(order["quantity"]), "named_direct_order", reward, int(round(float(reward) * 1.12)), str(order["buyer"]))
 	order["completed"] = true
 	fish_market_orders[order_index] = order
@@ -3516,6 +3661,9 @@ func _initialize_share_company_economy(company_id: String, price: int) -> void:
 		"trend_traders": {"name": "趋势交易者", "cash": price * 650, "holdings": 90, "locked_today": 0, "target_holdings": 90, "risk_preference": 0.80, "valuation": float(price)},
 		"panic_retail": {"name": "恐慌散户", "cash": price * 420, "holdings": 60, "locked_today": 0, "target_holdings": 60, "risk_preference": 0.90, "valuation": float(price) * 0.97}
 	}
+	for account_id in share_accounts[company_id].keys():
+		share_accounts[company_id][account_id]["bid_orders"] = []
+		share_accounts[company_id][account_id]["ask_orders"] = []
 	share_company_financials[company_id] = {
 		"company_cash": int(company["base_price"]) * 420,
 		"productive_assets": int(company["base_price"]) * 650,
@@ -3610,6 +3758,13 @@ func _repair_share_market_state() -> void:
 		share_lots[company_id] = cleaned_lots
 		if not share_accounts.get(company_id, {}) is Dictionary or share_accounts.get(company_id, {}).is_empty():
 			_initialize_share_company_economy(company_id, int(share_quotes[company_id]))
+		for account_id in share_accounts.get(company_id, {}).keys():
+			var account: Dictionary = share_accounts[company_id][account_id]
+			if not account.get("bid_orders", []) is Array:
+				account["bid_orders"] = []
+			if not account.get("ask_orders", []) is Array:
+				account["ask_orders"] = []
+			share_accounts[company_id][account_id] = account
 		_repair_share_ownership(company_id)
 	var cleaned_orders: Array = []
 	var expected_reserved := 0
@@ -4141,6 +4296,7 @@ func _share_company_report(company_id: String, closing_day: int) -> Dictionary:
 	var drivers: Array[String] = []
 	var revenue := 0
 	var costs := 0
+	var prepaid_cash_cost := 0
 	if company_id == "bluefin":
 		var player_procurement := 0
 		for raw_transaction in fish_market_transactions:
@@ -4158,6 +4314,7 @@ func _share_company_report(company_id: String, closing_day: int) -> Dictionary:
 		revenue = port_sales + actual_revenue
 		var weather_cost := 3200 if weather == "强风" else (1500 if weather == "阵雨" else 700)
 		costs = 6900 + player_procurement + channel_costs + weather_cost
+		prepaid_cash_cost = player_procurement
 		drivers.append("群体与外岛实际销售%d件，流水%d金贝" % [actual_units, actual_revenue + port_sales])
 		drivers.append("玩家采购%d、其他渠道采购%d金贝" % [player_procurement, channel_costs])
 		drivers.append("%s带来%d金贝海况成本" % [weather, weather_cost])
@@ -4204,6 +4361,7 @@ func _share_company_report(company_id: String, closing_day: int) -> Dictionary:
 		"revenue": revenue,
 		"costs": costs,
 		"profit": revenue - costs,
+		"prepaid_cash_cost": prepaid_cash_cost,
 		"drivers": drivers
 	}
 
@@ -4256,6 +4414,23 @@ func _build_share_order_book(company_id: String, closing_day: int, reference_pri
 		var buy_quantity := mini(6, int(external.get("cash", 0)) / maxi(20, reference_price))
 		if buy_quantity > 0:
 			book.append({"account_id": "external_traders", "side": "buy", "quantity": buy_quantity, "limit_price": clampi(int(floor(reference_price * 0.98)), maxi(20, int(ceil(reference_price * 0.88))), int(floor(reference_price * 1.12)))})
+	for account_id in accounts.keys():
+		var account: Dictionary = accounts[account_id]
+		account["bid_orders"] = []
+		account["ask_orders"] = []
+		accounts[account_id] = account
+	for raw_order in book:
+		var order: Dictionary = raw_order
+		var account_id := str(order.get("account_id", ""))
+		if not accounts.has(account_id):
+			continue
+		var account: Dictionary = accounts[account_id]
+		var key := "bid_orders" if str(order.get("side", "")) == "buy" else "ask_orders"
+		var orders: Array = account.get(key, [])
+		orders.append(order.duplicate(true))
+		account[key] = orders
+		accounts[account_id] = account
+	share_accounts[company_id] = accounts
 	return book
 
 
@@ -4298,6 +4473,38 @@ func _share_call_auction(company_id: String, reference_price: int, fundamental: 
 	return best
 
 
+func _settle_company_business_cash(company_id: String, requested_delta: int, company_cash_available: int, closing_day: int) -> int:
+	_ensure_fish_market_economy()
+	var company: Dictionary = SHARE_COMPANIES.get(company_id, {})
+	var company_name := str(company.get("name", company_id))
+	var group_id := "processors" if company_id == "bluefin" else ("port_merchants" if company_id == "wayfarer" else "race_organizers")
+	if not world_group_accounts.has(group_id) or requested_delta == 0:
+		return 0
+	var group: Dictionary = world_group_accounts[group_id]
+	if requested_delta > 0:
+		var from_group := mini(requested_delta, maxi(0, int(group.get("cash", 0))))
+		if from_group > 0:
+			group["cash"] = int(group.get("cash", 0)) - from_group
+			group["net_flow"] = int(group.get("net_flow", 0)) - from_group
+			_append_world_economy_flow(group_id, "company:%s" % company_id, "%s基础业务回款" % company_name, from_group, str(company.get("sector", "industry")), "none", {}, 0, from_group, company_name)
+		var remaining := requested_delta - from_group
+		var from_external := mini(remaining, maxi(0, int(world_external_account.get("cash", 0))))
+		if from_external > 0:
+			world_external_account["cash"] = int(world_external_account.get("cash", 0)) - from_external
+			world_external_account["outflow"] = int(world_external_account.get("outflow", 0)) + from_external
+			_append_world_economy_flow("external_islands", "company:%s" % company_id, "%s外岛业务回款" % company_name, from_external, str(company.get("sector", "industry")), "inflow", {}, 0, from_external, company_name)
+		world_group_accounts[group_id] = group
+		return from_group + from_external
+	var paid := mini(-requested_delta, maxi(0, company_cash_available))
+	if paid <= 0:
+		return 0
+	group["cash"] = int(group.get("cash", 0)) + paid
+	group["net_flow"] = int(group.get("net_flow", 0)) + paid
+	world_group_accounts[group_id] = group
+	_append_world_economy_flow("company:%s" % company_id, group_id, "%s经营支出" % company_name, paid, str(company.get("sector", "industry")), "none", {}, 0, -paid, str(group.get("name", group_id)))
+	return -paid
+
+
 func _settle_share_market_day(closing_day: int) -> void:
 	if closing_day <= share_last_settled_day:
 		return
@@ -4313,7 +4520,8 @@ func _settle_share_market_day(closing_day: int) -> void:
 		var report := _share_company_report(company_id, closing_day)
 		var financials: Dictionary = share_company_financials.get(company_id, {})
 		var profit := int(report["profit"])
-		var cash_flow := int(round(clampf(float(profit), -float(company["target_profit"]) * 1.5, float(company["target_profit"]) * 1.5) * 0.35))
+		var requested_cash_flow := int(round(clampf(float(profit), -float(company["target_profit"]) * 1.5, float(company["target_profit"]) * 1.5) * 0.35)) + int(report.get("prepaid_cash_cost", 0))
+		var cash_flow := _settle_company_business_cash(company_id, requested_cash_flow, int(financials.get("company_cash", 0)), closing_day)
 		financials["company_cash"] = maxi(0, int(financials.get("company_cash", 0)) + cash_flow)
 		financials["retained_earnings"] = int(financials.get("retained_earnings", 0)) + profit
 		financials["sustainable_profit"] = float(financials.get("sustainable_profit", company["target_profit"])) * 0.75 + float(profit) * 0.25
@@ -4476,6 +4684,7 @@ func share_market_rows() -> Array:
 			"company_inventory": int(financials.get("company_inventory", 0)),
 			"bid_depth": int(depth.get("bid_total", 0)),
 			"ask_depth": int(depth.get("ask_total", 0)),
+			"last_volume": int(report.get("auction", {}).get("volume", 0)) if report is Dictionary else 0,
 			"holders": holders,
 			"financials": financials.duplicate(true),
 			"fundamental_value": float(financials.get("fundamental_value", price)),
@@ -5013,6 +5222,24 @@ func _initialize_race_day() -> void:
 	daily_schedule["race_event_ids"] = event_ids
 
 
+func _repair_race_time_settlement() -> void:
+	# 旧版在run_race中已经即时推进过潮刻；缺少字段的已完赛记录必须视为已结算，避免读档后二次走时。
+	for index in range(race_events.size()):
+		var event: Dictionary = race_events[index]
+		if not bool(event.get("completed", false)):
+			continue
+		var summary: Dictionary = event.get("result_summary", {})
+		if not summary.has("time_settled"):
+			summary["time_settled"] = true
+			event["result_summary"] = summary
+			race_events[index] = event
+	for index in range(race_history.size()):
+		var history: Dictionary = race_history[index]
+		if not history.has("time_settled"):
+			history["time_settled"] = true
+			race_history[index] = history
+
+
 func _build_race_event(slot_index: int) -> Dictionary:
 	var event_seed := posmod(daily_seed, 2147483647) ^ ((slot_index + 11) * 32452843) ^ ((day + 17) * 49979687)
 	var event_rng := RandomNumberGenerator.new()
@@ -5517,12 +5744,36 @@ func _simulate_race_event(event: Dictionary, selected_beast_index: int) -> Dicti
 	return {"results": results, "stage_reports": stage_reports, "place": selected_place}
 
 
+func _settle_race_world_cash(player_paid: int, payout: int, event_id: String) -> void:
+	_ensure_fish_market_economy()
+	var organizer: Dictionary = world_group_accounts.get("race_organizers", {})
+	if player_paid > 0:
+		organizer["cash"] = int(organizer.get("cash", 0)) + player_paid
+		organizer["net_flow"] = int(organizer.get("net_flow", 0)) + player_paid
+		_append_world_economy_flow("player", "race_organizers", "逐风票据与研读费", player_paid, "race_services", "none", {}, 1, 0, "赛事组织者")
+	var shortfall := maxi(0, payout - int(organizer.get("cash", 0)))
+	if shortfall > 0:
+		var covered := mini(shortfall, maxi(0, int(world_external_account.get("cash", 0))))
+		world_external_account["cash"] = int(world_external_account.get("cash", 0)) - covered
+		world_external_account["outflow"] = int(world_external_account.get("outflow", 0)) + covered
+		organizer["cash"] = int(organizer.get("cash", 0)) + covered
+		organizer["net_flow"] = int(organizer.get("net_flow", 0)) + covered
+		_append_world_economy_flow("external_islands", "race_organizers", "赛事派彩准备金补充", covered, "race_services", "inflow", {}, 1, 0, "赛事组织者")
+	if payout > 0:
+		organizer["cash"] = int(organizer.get("cash", 0)) - payout
+		organizer["net_flow"] = int(organizer.get("net_flow", 0)) - payout
+		_append_world_economy_flow("race_organizers", "player", "逐风祝胜券派彩", payout, "race_services", "none", {}, 1, 0, "玩家")
+	organizer["last_event_id"] = event_id
+	world_group_accounts["race_organizers"] = organizer
+
+
 func run_race(
 	beast_index: int,
 	ticket_type: String,
 	requested_bet: int,
 	aid_id: String = "",
-	event_id: String = ""
+	event_id: String = "",
+	defer_time_settlement: bool = false
 ) -> Dictionary:
 	if beast_index < 0 or beast_index >= RACE_BEASTS.size():
 		return {"ok": false, "text": "请选择逐风兽。"}
@@ -5574,6 +5825,7 @@ func run_race(
 	if not used_free:
 		locked_principal = maxi(0, locked_principal - stake)
 	cash += payout
+	_settle_race_world_cash(aid_fee + (0 if used_free else stake), payout, str(event["event_id"]))
 	event["completed"] = true
 	event["sealed_snapshot"] = sealed_snapshot.duplicate(true)
 	event["result_summary"] = {
@@ -5581,7 +5833,8 @@ func run_race(
 		"winner_name": str(results[0]["name"]),
 		"selected_beast_id": str(RACE_BEASTS[beast_index]["id"]),
 		"selected_place": place,
-		"won": won
+		"won": won,
+		"time_settled": not defer_time_settlement
 	}
 	race_events[event_index] = event
 	race_event_sequence += 1
@@ -5604,14 +5857,16 @@ func run_race(
 		"won": won,
 		"payout": payout,
 		"net_cash": cash - cash_before,
+		"time_settled": not defer_time_settlement,
 		"aid_id": aid_id,
 		"aid_name": str(aid_info.get("name", "不使用造物"))
 	}
 	race_history.append(history_entry)
 	while race_history.size() > 32:
 		race_history.pop_front()
-	advance_time(1)
-	_record_wealth("逐风竞速 · %s" % ("命中" if won else "未中"))
+	if not defer_time_settlement:
+		advance_time(1)
+		_record_wealth("逐风竞速 · %s" % ("命中" if won else "未中"))
 	var selected_beast_id := str(RACE_BEASTS[beast_index]["id"])
 	add_npc_memory("aqiu", {
 		"memory_id": "supported_%s" % selected_beast_id,
@@ -5653,6 +5908,7 @@ func run_race(
 		"final_odds": odds,
 		"odds_shift": odds - float(sealed_snapshot["current_odds"]),
 		"bet_cap": max_bet,
+		"time_settlement_pending": defer_time_settlement,
 		"bet_was_capped": not used_free and requested_bet > max_bet,
 		"results": results,
 		"stage_reports": stage_reports,
@@ -5668,6 +5924,27 @@ func run_race(
 			(" %s部署费%d金贝。" % [str(aid_info.get("name", "造物")), aid_fee]) if aid_fee > 0 else ""
 		]
 	}
+
+
+func finalize_race_time(event_id: String) -> bool:
+	var event_index := _race_event_index(event_id)
+	if event_index < 0:
+		return false
+	var event: Dictionary = race_events[event_index]
+	var summary: Dictionary = event.get("result_summary", {})
+	if not bool(event.get("completed", false)) or bool(summary.get("time_settled", false)):
+		return false
+	summary["time_settled"] = true
+	event["result_summary"] = summary
+	race_events[event_index] = event
+	for history_index in range(race_history.size() - 1, -1, -1):
+		if str(race_history[history_index].get("event_id", "")) == event_id:
+			race_history[history_index]["time_settled"] = true
+			break
+	advance_time(1)
+	_record_wealth("逐风竞速 · %s" % ("命中" if bool(summary.get("won", false)) else "未中"))
+	changed.emit()
+	return true
 
 
 func _initialize_poker_invitations() -> void:
